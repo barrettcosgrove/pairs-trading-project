@@ -1,0 +1,1 @@
+"""Tiering logic for ranking and filtering candidate pairs."""

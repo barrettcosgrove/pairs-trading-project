@@ -1,0 +1,1 @@
+# Produces all charts and tables: NAV curve vs. XLK benchmark, monthly returns heatmap, drawdown chart, pairs activity timeline, composite score distributions, exit type breakdown, and walk-forward results table. Saves all outputs to outputs/report/.

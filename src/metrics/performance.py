@@ -1,0 +1,1 @@
+# Computes all key metrics from portfolio NAV time series and trade log: annualized return, Sharpe, Sortino, max drawdown, win rate, average trade duration vs. half-life, exit type breakdown, and average active pairs per month.

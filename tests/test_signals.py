@@ -1,0 +1,1 @@
+# Verifies: hedge ratio β is positive for valid pairs, spread percentile is within [0, 100], entry signals are only generated outside the 2nd-98th percentile band, all three parameters (β, μ, σ) use the same window.

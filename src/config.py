@@ -1,0 +1,356 @@
+# Single source of truth for every tunable parameter: window lengths, percentile thresholds, composite score weights, tier pool sizes, cost assumptions, drawdown limits. Frozen dataclass — immutable at runtime. Pass CONFIG into every function that needs parameters.
+
+"""
+src/config.py — Central Strategy Configuration
+
+Single source of truth for every tunable parameter in the ARQ pairs trading
+strategy. Implemented as a frozen dataclass so parameters are immutable at
+runtime — nothing can accidentally overwrite a value mid-backtest.
+
+Usage:
+    from src.config import CONFIG
+
+    window = CONFIG.signal_window
+    threshold = CONFIG.johansen_threshold
+
+Never hardcode parameter values in module files. Always import CONFIG.
+To run a sensitivity test with different parameters, instantiate a new
+StrategyConfig with overrides and pass it explicitly into the function.
+"""
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class StrategyConfig:
+    # -------------------------------------------------------------------------
+    # Universe Selection
+    # -------------------------------------------------------------------------
+
+    # Target number of stocks in the investable universe
+    universe_size: int = 100
+
+    # Floor — if fewer than this pass filters, proceed anyway with what we have
+    universe_floor: int = 60
+
+    # Hard pre-filter thresholds
+    min_price: float = 10.0                # Minimum stock price in USD
+    min_adv: int = 1_000_000              # Minimum average daily volume (shares)
+    min_dollar_volume: float = 25_000_000  # Minimum 30-day avg daily dollar volume ($25M)
+    max_spy_correlation: float = 0.90     # Maximum correlation to SPY over 60d
+
+    # Minimum number of distinct tech subsectors required in the universe
+    min_subsectors: int = 8
+
+    # How many days of data to check for missing values before filtering
+    data_quality_window: int = 90
+
+    # Maximum missing days allowed within the data quality window
+    max_missing_days: int = 5
+
+    # Universe reconstitution frequency in calendar days (~monthly)
+    universe_refresh_days: int = 21
+
+    # -------------------------------------------------------------------------
+    # Clustering
+    # -------------------------------------------------------------------------
+
+    # Rolling window for the correlation matrix used in clustering
+    # Intentionally decoupled from signal_window to avoid in-sample leakage
+    clustering_window: int = 120
+
+    # Range of k values evaluated by silhouette scoring
+    k_min: int = 4
+    k_max: int = 6
+
+    # Buffer extra days used to survive holidays/gaps
+    extbuffer_percent: float = 0.4
+
+    # Number of random restarts per k value in K-means
+    kmeans_restarts: int = 10
+
+    # Fixed random seed for K-means reproducibility across runs
+    random_seed: int = 42
+
+    # Adjusted Rand Index threshold — flag for manual review if below this
+    ari_stability_threshold: float = 0.50
+
+    # Clustering cadence in calendar days (~quarterly)
+    clustering_refresh_days: int = 63
+
+    # -------------------------------------------------------------------------
+    # Composite Scoring
+    # -------------------------------------------------------------------------
+
+    # Component weights — must sum to 1.0
+    weight_correlation_stability: float = 0.20
+    weight_cointegration: float = 0.25
+    weight_halflife: float = 0.3
+    weight_volatility: float = 0.15
+    weight_fundamentals: float = 0.10
+
+    # Cluster scoring: pairs below this absolute score are dropped.
+    # Scores are weighted sums of the [0, 1] mapped component scores.
+    min_composite_score: float = 0.55
+
+    # Maximum fraction of the portfolio NAV that can be allocated to a single pair leg
+    max_weight_per_pair: float = 1.0
+
+    # --- Correlation Stability ---
+    # Minimum recent 60-day correlation — pairs below this are discarded
+    # before composite scoring regardless of other scores
+    min_recent_correlation: float = 0.50
+
+    # Historical baseline window for correlation stability scoring (~1 year)
+    correlation_stability_historical_window: int = 252
+
+    # --- Cointegration (Johansen) ---
+    # p-value threshold after Benjamini-Hochberg FDR correction
+    johansen_threshold: float = 0.10
+
+    # --- Spread Half-Life ---
+    # Acceptable half-life range in trading days
+    # Must align with time_stop_days — pairs outside this range are discarded
+    halflife_min: int = 5
+    halflife_max: int = 20
+
+    # --- Volatility Compatibility ---
+    # Weight on short-window volatility ratio (remaining goes to long-window)
+    volatility_short_weight: float = 0.60
+    volatility_long_weight: float = 0.40
+
+    # Short and long volatility windows in trading days
+    volatility_short_window: int = 20
+    volatility_long_window: int = 120
+
+    # Maximum short-window volatility ratio before pair is discarded
+    max_volatility_ratio: float = 2.50
+
+    # --- Fundamental Compatibility ---
+    # Sector-compatibility scores used by the current fundamentals scorer.
+    # The scorer now uses sector labels from data/sector_map.py rather than
+    # yfinance fundamentals.
+    same_sector_score: float = 1.0
+    cross_sector_score: float = 0.4
+    unknown_sector_score: float = 0.5
+
+    # Number of pairs selected per cluster
+    finalists_per_cluster: int = 1
+
+    # -------------------------------------------------------------------------
+    # Signal Generation
+    # -------------------------------------------------------------------------
+
+    # Formation window: The historical lookback used to calculate the locked
+    # cointegrating vector (beta, mean, std) during the out-of-sample split.
+    formation_window: int = 120
+
+    # Signal window: Used strictly for correlation and volatility components
+    # during candidate scoring. Not used for OLS regression anymore.
+    signal_window: int = 60
+
+    # Floor on formation spread σ_F when computing formation z-score
+    # (spread_today − μ_F) / max(σ_F, this value); avoids exploding z when σ_F≈0.
+    min_formation_spread_std: float = 1e-4
+
+    # Hedge ratio rebalance trigger — rebalance short leg when beta drifts beyond
+    beta_rebalance_threshold: float = 0.15
+
+    # -------------------------------------------------------------------------
+    # Entry and Exit Signals (Z-Score thresholds)
+    # -------------------------------------------------------------------------
+
+    # Entry: absolute Z-score of the spread must exceed this to enter a trade.
+    # > +entry_zscore -> Short Spread. < -entry_zscore -> Long Spread.
+    entry_zscore: float = 1.5
+
+    # Take profit: close position when absolute Z-score reverts back towards the mean
+    take_profit_zscore: float = 0.5
+
+    # Stop loss: close immediately if absolute Z-score stretches beyond this limit
+    stop_loss_zscore: float = 3.5
+
+    # Momentum filter parameters (prevents stepping in front of freight trains)
+    momentum_window: int = 14
+    momentum_threshold: float = 0.15
+
+    # Time stop: maximum days to hold a position before force closing.
+    time_stop_days: int = 50
+
+    # Cooldown after a STOP_LOSS before the same pair may re-enter.
+    # Uses trading-day steps in the engine loop.
+    pair_stop_cooldown_days: int = 20
+
+    # -------------------------------------------------------------------------
+    # Regime Filters
+    # -------------------------------------------------------------------------
+
+    # --- VIX Filter (portfolio level) ---
+
+    # VIX level that blocks all new position entries across the portfolio
+    vix_entry_block: float = 28.0
+
+    # VIX level required to resume entries (must hold for vix_resume_days)
+    vix_resume: float = 25.0
+
+    # Number of consecutive trading days VIX must stay below vix_resume
+    vix_resume_days: int = 5
+
+    # --- Earnings Blackout (pair level) ---
+
+    # Trading days before end of quarter to begin blackout
+    earnings_blackout_days_before: int = 5
+
+    # Trading days after end of quarter before entries resume
+    earnings_blackout_days_after: int = 1
+
+    # -------------------------------------------------------------------------
+    # Position Sizing
+    # -------------------------------------------------------------------------
+
+    # Starting capital for the backtest simulation in USD
+    initial_capital: float = 100_000.0
+
+    # Target cash buffer to hold uninvested
+    cash_buffer_pct: float = 0.10
+
+    # Maximum gross leverage (long exposure + short exposure) / NAV
+    max_gross_leverage: float = 2.0
+
+    # Maximum fraction of active pairs from any single subsector
+    max_subsector_concentration: float = 0.35
+
+    # Maximum concurrent pairs from the same cluster
+    max_same_cluster_pairs: int = 2
+
+    # -------------------------------------------------------------------------
+    # Drawdown Controls
+    # -------------------------------------------------------------------------
+
+    # Weekly drawdown level that triggers position size reduction on new entries
+    drawdown_reduce_threshold: float = 0.05   # 5% from prior week close
+
+    # Fraction to reduce new entry sizes when soft threshold is hit
+    drawdown_reduce_factor: float = 0.50      # New entries at 50% normal size
+
+    # Rolling peak drawdown that halts all new entries and trims existing positions
+    drawdown_halt_threshold: float = 0.10     # 10% from rolling peak
+
+    # Fraction to which existing positions are reduced when halt is triggered
+    drawdown_trim_factor: float = 0.25        # Trim to 25% of current size
+
+    # Days over which to execute the trim (to avoid market impact)
+    drawdown_trim_days: int = 5
+
+    # Recovery condition: portfolio must reach within this pct of triggering peak
+    drawdown_recovery_threshold: float = 0.05
+
+    # Consecutive positive days required before resuming normal operations
+    drawdown_recovery_days: int = 5
+
+    # -------------------------------------------------------------------------
+    # Transaction Costs
+    # -------------------------------------------------------------------------
+
+    # Commission per share in USD (both legs)
+    commission_per_share: float = 0.005
+
+    # Slippage in basis points for liquid stocks (ADV > 5M shares)
+    slippage_bps_liquid: float = 5.0
+
+    # Slippage in basis points for medium liquidity stocks (1M-5M ADV)
+    slippage_bps_medium: float = 10.0
+
+    # ADV threshold separating liquid from medium liquidity in shares
+    liquidity_threshold_adv: int = 5_000_000
+
+    # Bid-ask spread in basis points for stocks priced above $30
+    bid_ask_bps_high_price: float = 2.0
+
+    # Bid-ask spread in basis points for stocks priced between $10 and $30
+    bid_ask_bps_low_price: float = 5.0
+
+    # Price threshold separating bid-ask spread tiers in USD
+    bid_ask_price_threshold: float = 30.0
+
+    # Flat annualized short borrow cost applied to all short legs
+    # Replace with per-stock broker rates if available before live deployment
+    short_borrow_annual: float = 0.02        # 2% per year
+
+    # Minimum expected profit as a multiple of round-trip cost to enter a trade
+    min_profit_to_cost_ratio: float = 2.0
+
+    # -------------------------------------------------------------------------
+    # Backtesting
+    # -------------------------------------------------------------------------
+
+    # Hard start date for the backtest. If None, uses the earliest available data.
+    # Set this to "2022-11-01" to easily restrict a 7-year dataset down to 3.5 years.
+    backtest_start_date: str | None = "2022-01-01"
+
+    # Hard end date for the backtest. If None, uses all available data.
+    # Set this to "2023-12-31" to easily restrict the dataset to end in 2023.
+    backtest_end_date: str | None = "2024-12-31"
+
+
+    # Fraction of the full dataset held out as out-of-sample
+    # Portion of dataset to hold out for walk-forward validation (e.g. 0.20 = 20%)
+    oos_fraction: float = 0.30
+    
+    # If True, the engine will only loop over the OOS timeline (bypassing the IS timeline)
+    run_oos_only: bool = False
+
+    # Partial fill threshold — cancel long leg if short leg fills below this
+    partial_fill_threshold: float = 0.95     # 95% of intended short quantity
+
+
+# -----------------------------------------------------------------------------
+# Singleton instance — import this throughout the codebase
+# -----------------------------------------------------------------------------
+
+CONFIG = StrategyConfig()
+
+
+# -----------------------------------------------------------------------------
+# Validation — catches misconfiguration at import time
+# -----------------------------------------------------------------------------
+
+def _validate_config(cfg: StrategyConfig) -> None:
+    """Validate internal consistency of config on startup."""
+
+    weight_sum = (
+        cfg.weight_correlation_stability
+        + cfg.weight_cointegration
+        + cfg.weight_halflife
+        + cfg.weight_volatility
+        + cfg.weight_fundamentals
+    )
+    assert abs(weight_sum - 1.0) < 1e-9, (
+        f"Composite score weights must sum to 1.0, got {weight_sum:.4f}"
+    )
+
+
+    assert cfg.time_stop_days >= cfg.halflife_max * 2, (
+        f"time_stop_days ({cfg.time_stop_days}) must be at least 2x halflife_max "
+        f"({cfg.halflife_max}) to allow pairs enough time to fully revert"
+    )
+
+    assert cfg.take_profit_zscore < cfg.entry_zscore < cfg.stop_loss_zscore, (
+        "Z-score thresholds must logically cascade: take_profit < entry < stop_loss"
+    )
+
+    assert cfg.vix_resume < cfg.vix_entry_block, (
+        f"vix_resume ({cfg.vix_resume}) must be less than "
+        f"vix_entry_block ({cfg.vix_entry_block})"
+    )
+
+    assert cfg.volatility_short_weight + cfg.volatility_long_weight == 1.0, (
+        "Volatility window weights must sum to 1.0"
+    )
+
+    assert cfg.min_formation_spread_std > 0, (
+        "min_formation_spread_std must be positive (used as σ floor in formation z)"
+    )
+
+
+_validate_config(CONFIG)

@@ -1,0 +1,1 @@
+# Verifies: portfolio is dollar-neutral after each trade, no position contains a shared stock, drawdown controls trigger at the correct thresholds, transaction costs are deducted on every trade, time stop closes positions exactly at 20 days.

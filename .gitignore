@@ -1,0 +1,107 @@
+# Excludes raw data files, processed cache, outputs, virtual environments, and .pyc files from git.
+# =============================================================================
+# ARQ Pairs Trading — .gitignore
+# =============================================================================
+# Rule of thumb: commit code and docs, never commit data or generated outputs.
+# Teammates regenerate data locally by running scripts/01_fetch_data.py
+# and scripts/02_build_universe.py after cloning.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Project-specific: Data and Outputs
+# -----------------------------------------------------------------------------
+
+# Raw data fetched from yfinance — regenerate with scripts/01_fetch_data.py
+data/raw/
+
+# Fetch progress metadata/checkpoints — local and resumable, never committed
+data/raw/fetch_manifest.json
+data/raw/fundamentals_checkpoint.parquet
+
+# Processed/derived data — regenerate with scripts/02_build_universe.py
+data/processed/
+
+# All backtest results, charts, and report outputs
+outputs/
+
+# Local environment variables (API keys, personal settings)
+# Copy .env.example to .env and fill in your own values
+.env
+
+# -----------------------------------------------------------------------------
+# Python
+# -----------------------------------------------------------------------------
+
+# Byte-compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution and packaging
+*.egg-info/
+*.egg
+dist/
+build/
+wheels/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# -----------------------------------------------------------------------------
+# Testing and Coverage
+# -----------------------------------------------------------------------------
+
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# -----------------------------------------------------------------------------
+# Type Checking
+# -----------------------------------------------------------------------------
+
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# -----------------------------------------------------------------------------
+# Editors and IDEs
+# -----------------------------------------------------------------------------
+
+# VS Code
+.vscode/
+
+# JetBrains (PyCharm, etc.)
+.idea/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Jupyter (excluded per project decision — use scripts, not notebooks)
+.ipynb_checkpoints/
+*.ipynb
+
+# -----------------------------------------------------------------------------
+# Misc
+# -----------------------------------------------------------------------------
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+*.parquet
+*.json
+*.png
+
+# Testing purposes
+/src/clustering/quick_log.py
+/src/clustering/rolling_window_validation.py
