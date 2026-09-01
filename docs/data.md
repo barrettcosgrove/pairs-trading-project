@@ -2,6 +2,10 @@
 
 # ARQ Pairs Trading — Data Reference
 
+This document is the reference for fetch sources, parquet schemas, and
+known data issues. Live scoring uses sector labels, not the fundamentals
+snapshot. Pipeline layout: [`architecture.md`](architecture.md).
+
 This document is the single source of truth for everything data-related:
 where data comes from, what each file contains, how it is cleaned, what
 the known quality issues are, and how to recover when something goes wrong.
@@ -12,14 +16,17 @@ If you are debugging a data issue, start here.
 
 ## 1. Overview
 
-The pipeline uses three external data sources, all accessed through yfinance:
+The candidate universe is ~95 multi-sector S&P-style names in
+`CANDIDATE_TICKERS` (`src/data/fetch.py`), not a tech-only GICS 45 list.
+Fetch window: 2019-01-01 → 2026-04-01.
 
 
 | Source                       | What It Provides                        | Fetch Frequency           |
 | ---------------------------- | --------------------------------------- | ------------------------- |
 | Yahoo Finance (prices)       | Daily OHLCV for all candidate tickers   | Once at project start     |
-| Yahoo Finance (fundamentals) | P/S ratio and TTM revenue growth        | Once, refreshed quarterly |
-| Yahoo Finance (VIX + SPY)    | Market volatility index and S&P 500 ETF | Once at project start     |
+| Yahoo Finance (fundamentals) | P/S ratio and TTM revenue growth        | Once — **unused by live scoring** |
+| CBOE then yfinance (VIX)     | Market volatility index                 | Once at project start     |
+| Alpha Vantage then yfinance (SPY) | S&P 500 ETF (needs `ALPHA_VANTAGE_KEY` for AV) | Once at project start |
 
 
 All raw data is written to `data/raw/` as parquet files immediately after
@@ -351,14 +358,14 @@ binary gates, not scored components.
 
 | Filter          | Threshold                       | Source Field                      | Rationale                                                                                                                                                                                         |
 | --------------- | ------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sector          | GICS Sector 45 (Technology)     | `data/sector_map.py`              | Sector homogeneity improves cointegration probability and ensures pairs share common macro drivers                                                                                                |
+| Mapped ticker   | Must appear in `SECTOR_MAP`     | `data/sector_map.py`              | Multi-sector labels (Energy, Financials, Healthcare, …). Live fundamentals score uses these labels (same / cross / unknown), not P/S.                                                              |
 | Liquidity       | ADV > 1,000,000 shares (30-day) | `volume`                          | Ensures positions can be entered and exited without moving the price                                                                                                                              |
 | Price           | Close > $10.00                  | `close`                           | Eliminates penny stocks where bid-ask spreads are wide and price behavior is erratic                                                                                                              |
 | Dollar volume   | 30-day avg > $25,000,000        | `adj_close × volume` (30-day avg) | Filters micro-caps and thinly traded names. True market cap unavailable without shares outstanding — 30-day average daily dollar volume is used as a stable size proxy. Documented approximation. |
 | SPY correlation | < 0.90 (60-day rolling)         | `adj_close` vs SPY                | Removes stocks that simply track the index and produce spreads driven by macro rather than company-specific dynamics                                                                              |
 
 
-**Target universe size:** 100 stocks across ≥ 8 distinct tech subsectors.
+**Target universe size:** `CONFIG.universe_size` (100) from ~95 mapped candidates across ≥ `CONFIG.min_subsectors` (8) distinct sectors.
 **Floor:** If fewer than 60 stocks pass filters in a given month, the
 pipeline proceeds with whatever passes and logs a warning.
 
@@ -659,31 +666,34 @@ uv run python scripts/02_build_universe.py
 ## 9. Sector Map
 
 The file `data/sector_map.py` is a hand-authored dictionary mapping each
-candidate ticker to its GICS technology subsector. It is committed to the
-repo and maintained manually.
+candidate ticker to a sector label. It is committed and validated at
+import time against `CANDIDATE_TICKERS`. Live `fundamentals.py` scoring
+uses these labels (same sector 1.0 / cross 0.4 / unknown 0.5).
 
-Subsector categories used:
+Valid labels (must match `_validate_sector_map` in that file):
 
 
-| Subsector Key          | Description                               | Example Tickers        |
-| ---------------------- | ----------------------------------------- | ---------------------- |
-| `semiconductors`       | Chip design and manufacturing             | NVDA, AMD, INTC, QCOM  |
-| `cloud_infrastructure` | Cloud platforms and SaaS infrastructure   | AMZN, MSFT, SNOW, DDOG |
-| `cybersecurity`        | Security software and services            | CRWD, PANW, FTNT, ZS   |
-| `enterprise_software`  | Business productivity and ERP software    | ORCL, WDAY, ADSK, VEEV |
-| `consumer_hardware`    | Devices, storage, peripherals             | AAPL, DELL, STX, WDC   |
-| `gaming`               | Gaming platforms, engines, and publishers | EA, TTWO, RBLX, U      |
-| `social_media`         | Social platforms and digital advertising  | META, SNAP, PINS, TTD  |
-| `ai_infrastructure`    | AI chips, accelerators, and tooling       | NVDA, AMD, SMCI, ARM   |
-| `fintech`              | Financial technology platforms            | PYPL, SQ, AFRM, SOFI   |
-| `ecommerce_tech`       | E-commerce platforms and enablement       | SHOP, BIGC, WIX, CART  |
+| Sector label | Example tickers |
+|---|---|
+| Semiconductors | NVDA, AMD, INTC, AVGO |
+| Enterprise Software | MSFT, ORCL, CRM, ADBE |
+| Cybersecurity | FTNT, PANW, CRWD, CHKP |
+| Energy | XOM, CVX, SLB, VLO |
+| Financials | JPM, BAC, GS, SCHW |
+| Healthcare | JNJ, UNH, ABBV, LLY |
+| Consumer Staples | PG, KO, COST, WMT |
+| Industrials | CAT, HON, ETN, RTX |
+| Utilities | NEE, DUK, SO, AEP |
+| Materials | LIN, APD, FCX, NEM |
+| Consumer Discretionary | AMZN, TSLA, HD, MCD |
+| Communication Services | GOOGL, META, NFLX, DIS |
 
 
 **Updating the sector map:**
 If a ticker is added to `CANDIDATE_TICKERS` in `src/data/fetch.py`, it
 must also be added to `data/sector_map.py` before running
-`scripts/02_build_universe.py`. The universe filter will raise a KeyError
-if a ticker is missing from the map.
+`scripts/02_build_universe.py`. Import of the map raises `ValueError` if
+a ticker is missing or the label is not in the valid set.
 
 ---
 

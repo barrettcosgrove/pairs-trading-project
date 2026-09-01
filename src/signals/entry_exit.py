@@ -98,6 +98,50 @@ def _is_momentum_breakout(
     return False
 
 
+def _prior_day_zscore(
+    ticker_a: str,
+    ticker_b: str,
+    prices: pd.DataFrame,
+    as_of: date,
+    beta_formation: float,
+    mean_formation: float,
+    std_formation: float,
+    config: StrategyConfig,
+) -> float:
+    """
+    Compute the formation z-score on the last trading day before ``as_of``.
+
+    Args:
+        ticker_a: Ticker symbol for leg A.
+        ticker_b: Ticker symbol for leg B.
+        prices: Long-form prices with columns [date, ticker, adj_close].
+        as_of: Signal date; the z is computed on the latest date strictly
+            before this.
+        beta_formation: Locked hedge ratio from the formation period.
+        mean_formation: Locked spread mean from the formation period.
+        std_formation: Locked spread std from the formation period.
+        config: Strategy parameters.
+
+    Returns:
+        Prior-day formation z-score, or NaN when no earlier date exists.
+    """
+    earlier = prices.loc[prices["date"] < pd.Timestamp(as_of), "date"]
+    if earlier.empty:
+        return float("nan")
+    prev_date = earlier.max()
+    _, z_prev = compute_spread(
+        ticker_a,
+        ticker_b,
+        beta_formation,
+        mean_formation,
+        std_formation,
+        prices,
+        prev_date,
+        config=config,
+    )
+    return z_prev
+
+
 def get_signal(
     ticker_a: str,
     ticker_b: str,
@@ -116,7 +160,8 @@ def get_signal(
 
     Computes formation z-score of the spread and maps it to entry/exit
     strings using CONFIG thresholds. Exits are evaluated before entries when
-    a position is open.
+    a position is open. When ``entry_requires_cross`` is set, entries fire
+    only on the first day |z| moves beyond the entry band (prior day inside).
 
     Args:
         ticker_a: Ticker symbol for leg A.
@@ -214,9 +259,28 @@ def get_signal(
 
         return HOLD
 
-    if z_score <= -cfg.entry_zscore:
-        if _is_momentum_breakout(ticker_a, ticker_b, prices, as_of, config=cfg):
+    if abs(z_score) < cfg.entry_zscore:
+        return HOLD
+
+    if _is_momentum_breakout(ticker_a, ticker_b, prices, as_of, config=cfg):
+        return HOLD
+
+    # Fresh-cross requirement: only enter on the day z first moves beyond the
+    # entry band. A pair already stretched on its first active day (z measured
+    # against its own formation window) is mid-divergence, not reverting.
+    if cfg.entry_requires_cross:
+        z_prev = _prior_day_zscore(
+            ticker_a, ticker_b, prices, as_of,
+            beta_formation, mean_formation, std_formation, cfg,
+        )
+        if z_prev != z_prev or abs(z_prev) >= cfg.entry_zscore:
+            logger.info(
+                "NO-CROSS HOLD %s/%s — z=%.2f, prior z=%.2f already beyond ±%.2f",
+                ticker_a, ticker_b, z_score, z_prev, cfg.entry_zscore,
+            )
             return HOLD
+
+    if z_score <= -cfg.entry_zscore:
         logger.info(
             "LONG_SPREAD %s/%s — z_score=%.2f <= entry threshold %.2f",
             ticker_a,
@@ -226,16 +290,11 @@ def get_signal(
         )
         return LONG_SPREAD
 
-    if z_score >= cfg.entry_zscore:
-        if _is_momentum_breakout(ticker_a, ticker_b, prices, as_of, config=cfg):
-            return HOLD
-        logger.info(
-            "SHORT_SPREAD %s/%s — z_score=%.2f >= entry threshold %.2f",
-            ticker_a,
-            ticker_b,
-            z_score,
-            cfg.entry_zscore,
-        )
-        return SHORT_SPREAD
-
-    return HOLD
+    logger.info(
+        "SHORT_SPREAD %s/%s — z_score=%.2f >= entry threshold %.2f",
+        ticker_a,
+        ticker_b,
+        z_score,
+        cfg.entry_zscore,
+    )
+    return SHORT_SPREAD

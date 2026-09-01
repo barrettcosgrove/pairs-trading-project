@@ -4,8 +4,8 @@
 # Enforces the no-shared-stocks constraint across all pairs.
 
 import logging
-from datetime import date
 from dataclasses import dataclass
+from datetime import date
 
 import pandas as pd
 
@@ -31,6 +31,9 @@ class Position:
     dollar_allocation_at_entry: float
     entry_transaction_cost: float
     entry_date: date
+    # Live hedge ratio used only to size/rebalance shares. Signals always use
+    # beta_at_entry / mean_at_entry / std_at_entry (locked at formation).
+    beta_hedge: float = 0.0
     cumulative_cash_adjustments: float = 0.0
     days_open: int = 0
     realized_pnl: float = 0.0
@@ -65,6 +68,9 @@ class Portfolio:
         self.nav_history: list[tuple[date, float]] = []
         self._halted: bool = False
         self._trim_days_remaining: int = 0
+        self._peak_reset_done: bool = False
+        self._recovery_days_count: int = 0
+        self._recovery_ref_nav: float | None = None
 
     # ── NAV and capital ───────────────────────────────────────────────────────
 
@@ -145,8 +151,14 @@ class Portfolio:
         Evaluate drawdown thresholds and return entry permission and size factor.
 
         Soft threshold (5% from prior week): new entries at 50% normal size.
-        Hard threshold (10% from rolling peak): halt all new entries, begin
-        gradual trim of existing positions over ``self._cfg.drawdown_trim_days``.
+        Hard threshold (10% from rolling peak): halt all new entries and trim
+        existing positions to ``drawdown_trim_factor`` over
+        ``drawdown_trim_days``. Once the trim completes, the rolling peak is
+        reset to current NAV and the halt releases after
+        ``drawdown_recovery_days`` consecutive non-losing days — a temporary
+        circuit breaker, not a permanent stop. (The old release rule required
+        NAV within 5% of the all-time peak with no entries allowed, which
+        deadlocked the book permanently from 2023-03-09.)
 
         Args:
             nav: Current portfolio NAV.
@@ -159,27 +171,55 @@ class Portfolio:
         dd_peak = self.drawdown_from_peak(nav)
         dd_week = self.drawdown_from_prior_week(nav)
 
-        if dd_peak >= self._cfg.drawdown_halt_threshold:
-            if not self._halted:
-                logger.warning(
-                    "HARD HALT — drawdown from peak %.1f%% exceeds %.1f%% threshold. "
-                    "Halting new entries and beginning position trim.",
-                    dd_peak * 100, self._cfg.drawdown_halt_threshold * 100,
-                )
-                self._halted = True
-                self._trim_days_remaining = self._cfg.drawdown_trim_days
-            return False, 0.0
-
         if self._halted:
-            within_threshold = dd_peak <= self._cfg.drawdown_recovery_threshold
-            if within_threshold:
+            if self._trim_days_remaining > 0:
+                return False, 0.0
+
+            if not self._peak_reset_done:
+                # Trim finished: re-anchor the drawdown baseline so recovery is
+                # measured from the post-trim book, not the pre-crash peak.
                 logger.info(
-                    "Drawdown recovery condition met — resuming normal operations "
-                    "(drawdown from peak now %.1f%%)", dd_peak * 100,
+                    "Drawdown trim complete — resetting peak NAV $%.0f -> $%.0f "
+                    "and starting %d-day recovery count.",
+                    self.peak_nav, nav, self._cfg.drawdown_recovery_days,
+                )
+                self.peak_nav = nav
+                self._peak_reset_done = True
+                self._recovery_days_count = 0
+                self._recovery_ref_nav = nav
+                return False, 0.0
+
+            if self._recovery_ref_nav is None or nav >= self._recovery_ref_nav:
+                self._recovery_days_count += 1
+            else:
+                self._recovery_days_count = 0
+            self._recovery_ref_nav = nav
+
+            if self._recovery_days_count >= self._cfg.drawdown_recovery_days:
+                logger.info(
+                    "Drawdown recovery condition met (%d non-losing days) — "
+                    "resuming normal operations at NAV $%.0f.",
+                    self._recovery_days_count, nav,
                 )
                 self._halted = False
+                self._peak_reset_done = False
+                self._recovery_days_count = 0
+                self._recovery_ref_nav = None
             else:
                 return False, 0.0
+
+        elif dd_peak >= self._cfg.drawdown_halt_threshold:
+            logger.warning(
+                "HARD HALT — drawdown from peak %.1f%% exceeds %.1f%% threshold. "
+                "Halting new entries and beginning position trim.",
+                dd_peak * 100, self._cfg.drawdown_halt_threshold * 100,
+            )
+            self._halted = True
+            self._trim_days_remaining = self._cfg.drawdown_trim_days
+            self._peak_reset_done = False
+            self._recovery_days_count = 0
+            self._recovery_ref_nav = None
+            return False, 0.0
 
         if dd_week >= self._cfg.drawdown_reduce_threshold:
             logger.info(
@@ -263,18 +303,23 @@ class Portfolio:
         """
         Compute the dollar allocation for one leg of a new position.
 
-        Distributes investable capital equally among active pairs,
-        scaled by the drawdown size factor.
+        Splits investable capital across ``target_concurrent_pairs`` expected
+        simultaneous positions (or fewer if fewer pairs are active), scaled by
+        the drawdown size factor and capped at ``max_weight_per_pair`` of NAV.
+        Dividing by the full active-pair count sized for a concurrency the book
+        never reached (median 2 open pairs vs ~10 active), stranding capital.
 
         Args:
             nav: Current portfolio NAV.
             size_factor: Drawdown size multiplier (1.0 normal, 0.5 soft reduce).
+            active_pairs_count: Number of pairs currently scored as tradable.
 
         Returns:
             Dollar value to allocate to each leg of the new position.
         """
         investable_capital = nav * (1.0 - self._cfg.cash_buffer_pct)
-        equal_weight_alloc = investable_capital / max(1, active_pairs_count)
+        divisor = max(1, min(active_pairs_count, self._cfg.target_concurrent_pairs))
+        equal_weight_alloc = investable_capital / divisor
         max_alloc = nav * self._cfg.max_weight_per_pair
         return min(equal_weight_alloc, max_alloc) * size_factor
 
@@ -348,6 +393,7 @@ class Portfolio:
             beta_at_entry=beta,
             mean_at_entry=mean,
             std_at_entry=std,
+            beta_hedge=beta,
             expected_halflife=expected_halflife,
             entry_net_cash_flow=net_cash_flow,
             dollar_allocation_at_entry=float(dollar_allocation),

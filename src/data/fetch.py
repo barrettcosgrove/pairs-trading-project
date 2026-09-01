@@ -27,7 +27,7 @@ import logging
 import os
 import random
 import time
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import numpy as np

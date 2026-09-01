@@ -1,5 +1,10 @@
 # ARQ Pairs Trading — Guide to Using AI Coding Assistants
 
+> **Read order for a new session:** `CLAUDE.md` or `AGENTS.md` →
+> `docs/architecture.md` → `src/config.py`. `docs/strategy.md` is the
+> original v2.0 spec; several sections (percentiles, tiering, Bollinger)
+> are not implemented. Live results: `docs/diagnostics.md`.
+
 This guide applies to all AI coding tools your team is using: **Claude Code**, **Cursor**, and **OpenAI Codex**. The principles are the same regardless of tool. The goal is to get consistent, correct, project-aware code without having to re-explain the codebase every session.
 
 ---
@@ -33,19 +38,16 @@ Contains: project overview, tech stack, file structure, module ownership, critic
 
 ---
 
-### `docs/strategy.md` — What the Strategy Does
+### `docs/strategy.md` — Original v2.0 spec
 
-**The canonical reference for trading logic.**
-
-Contains: full strategy specification including universe selection, clustering rationale, composite score components and weights, tiering system, regime filters, signal generation, exit rules, and position sizing.
+Design history. Do **not** treat it as the live engine. Implemented
+behavior is `src/config.py` + `docs/architecture.md`. If this file and
+the code disagree, trust the code.
 
 **When to use:**
 
-- Before implementing any trading logic (signals, scoring, tiering)
-- When you are unsure why a threshold or rule exists
-- When reviewing whether code matches the intended strategy
-
-**If code and strategy.md disagree → fix the code.**
+- To understand why an earlier design chose a rule
+- Not as a checklist for new signal or scoring code
 
 ---
 

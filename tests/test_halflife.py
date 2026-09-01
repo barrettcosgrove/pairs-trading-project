@@ -12,13 +12,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.config import CONFIG
 from src.scoring.halflife import (
     _compute_halflife,
     score,
     score_candidate_pairs,
 )
-from src.config import CONFIG
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

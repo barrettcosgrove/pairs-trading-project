@@ -186,10 +186,11 @@ def main() -> None:
         logger.info(
             "Full backtest outputs not found — running run_backtest(CONFIG) once..."
         )
-        trade_log, nav_series, pair_daily = run_backtest(CONFIG)
+        trade_log, nav_series, pair_daily, blocked_entries = run_backtest(CONFIG)
         trade_log.to_csv(trade_path_full, index=False)
         nav_series.to_csv(nav_path_full, index=False)
         pair_daily.to_csv(pair_path_full, index=False)
+        blocked_entries.to_csv(out_dir / "blocked_entries.csv", index=False)
 
     oos_trades = _slice_trades_oos(trade_log, oos_start)
     oos_nav = _slice_nav_oos(nav_series, oos_start)

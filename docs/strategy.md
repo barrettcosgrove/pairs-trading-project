@@ -1,6 +1,19 @@
 # Strategy Specification
 
-<!-- Full refined strategy spec (v2.0): universe selection, clustering, composite scoring, tiering, regime filters, signal generation, exit rules, position sizing, and risk management. Canonical reference — if code and this document disagree, fix the code. -->
+> **Status — original v2.0 design spec, not the live engine.**
+>
+> Several sections below describe features that were cut or replaced:
+> empirical percentiles, pair tiering, KPSS confirmation, Bollinger regime
+> gating, P/S fundamentals, tech-only universe, and `k` up to 20.
+>
+> **What actually runs:** `src/config.py` + the code.
+> **Implemented pipeline and contracts:** [`architecture.md`](architecture.md)
+> **Measured issues and NAV:** [`diagnostics.md`](diagnostics.md)
+>
+> Keep this file as design history. Do not “fix the code” to match this
+> spec unless the team explicitly re-adopts a section.
+
+<!-- Full refined strategy spec (v2.0): universe selection, clustering, composite scoring, tiering, regime filters, signal generation, exit rules, position sizing, and risk management. -->
 
 ---
 

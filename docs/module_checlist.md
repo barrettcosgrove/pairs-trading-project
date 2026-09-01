@@ -1,5 +1,10 @@
 # ARQ Pairs Trading — Module Implementation Checklist
 
+> **Historical build checklist.** Several items still describe percentiles,
+> `walkforward_results.csv`, and `k_max = 20`. Live behavior is
+> `src/config.py` + [`architecture.md`](architecture.md). Do not implement
+> new work from unchecked boxes without checking the code first.
+
 This document tells each teammate exactly what to build, in what order,
 and what each file must do. Work top to bottom within your section.
 Check off each item as you complete it.

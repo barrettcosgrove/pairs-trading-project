@@ -6,7 +6,6 @@ No real market data, no network access, no parquet reads.
 All tests complete in under 30 seconds.
 """
 
-from datetime import date
 
 import numpy as np
 import pandas as pd

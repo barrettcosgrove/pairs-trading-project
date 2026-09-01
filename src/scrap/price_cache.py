@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
@@ -140,7 +140,7 @@ def load_or_fetch_prices(
         data = data.to_frame(name=tickers[0])
     data = data.ffill().dropna(axis=1)
 
-    fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    fetched_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     meta_body = {
         "request_start": req_start,
         "request_end": req_end,

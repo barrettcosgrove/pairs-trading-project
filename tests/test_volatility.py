@@ -6,7 +6,6 @@ No real market data, no network access, no parquet reads.
 All tests complete in under 30 seconds.
 """
 
-from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -14,7 +13,6 @@ import pytest
 
 from src.config import CONFIG
 from src.scoring.volatility import score, score_candidate_pairs
-
 
 N_OBSERVATIONS = CONFIG.volatility_long_window + CONFIG.volatility_short_window
 INSUFFICIENT_OBSERVATIONS = CONFIG.volatility_short_window

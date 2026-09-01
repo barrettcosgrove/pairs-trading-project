@@ -2,19 +2,19 @@ import argparse
 import itertools
 from pathlib import Path
 
-import pandas as pd
-import numpy as np
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
-import statsmodels.tsa.stattools as ts
-import statsmodels.api as sm
 import matplotlib.pyplot as plt
-
+import numpy as np
+import pandas as pd
+import statsmodels.api as sm
+import statsmodels.tsa.stattools as ts
 from price_cache import (
     default_cache_raw_dir,
     format_price_load_report,
     load_or_fetch_prices,
 )
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+
 
 def download_data(
     tickers,

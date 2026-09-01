@@ -110,8 +110,8 @@ def print_summary(
 
     print()
     print(f"  Data quality report : {quality_report_path}")
-    print(f"  Review it for dropped tickers and return outliers before")
-    print(f"  running the backtest.")
+    print("  Review it for dropped tickers and return outliers before")
+    print("  running the backtest.")
     print()
     print("  Next step:")
     print("    uv run python scripts/03_run_backtest.py")

@@ -1,6 +1,13 @@
 # ARQ Pairs Trading Strategy
 
-A systematic, market-neutral pairs trading strategy built on unsupervised machine learning. The strategy identifies historically cointegrated stock pairs within the US sectors, then generates mean-reversion trading signals when the spread between a pair deviates beyond empirical thresholds from its historical distribution.
+A systematic, market-neutral pairs trading strategy. The pipeline clusters a
+multi-sector S&P-style universe, scores within-cluster pairs, and trades
+mean-reversion of the log-price spread using a locked formation z-score.
+
+**Live knobs:** `src/config.py`
+**Original v2.0 spec (several sections are not implemented):** `docs/strategy.md`
+**Implemented design:** `docs/architecture.md`
+**Backtest issues and measured results:** `docs/diagnostics.md`
 
 ---
 
@@ -21,57 +28,85 @@ A systematic, market-neutral pairs trading strategy built on unsupervised machin
 
 ## Overview
 
-Pairs trading exploits the tendency of economically linked stocks to move together over time. When two such stocks temporarily diverge, a statistical arbitrage opportunity emerges: go long the underperformer, short the outperformer, and profit when they converge back to their historical relationship.
+Pairs trading exploits the tendency of economically linked stocks to move
+together. When two such stocks temporarily diverge, the strategy goes long
+the underperformer, short the outperformer, and exits when the spread
+reverts (or hits a stop).
 
-This strategy operationalizes that idea at scale across 100 liquid US technology stocks using a three-stage pipeline:
+The live pipeline:
 
-1. **Clustering** — K-means groups stocks by correlation structure, reducing ~4,950 possible pairs to ~400–600 high-quality candidates
-2. **Composite Scoring** — Five quantitative components rank candidates on cointegration strength, reversion speed, volatility compatibility, and fundamental similarity
+1. **Universe** — ~95 multi-sector names from `CANDIDATE_TICKERS`, filtered
+   monthly on price, ADV, dollar volume, and SPY correlation
+2. **Clustering** — K-means on a 120-day correlation distance matrix
+   (`k ∈ [4, 6]`), refreshed about every 63 calendar days
+3. **Scoring** — five-component composite; half-life is a hard gate; Johansen
+   is a continuous score with a soft floor; exactly one finalist per cluster
+   if it clears `min_composite_score`
+4. **Signals** — formation z-score of `s = log A − β_F log B` (not empirical
+   percentiles). VIX and quarter-end earnings blackout filter new entries
 
-Trades are entered and exited using empirical percentile thresholds (not normal distribution assumptions) on the spread, filtered by a VIX gate at the portfolio level.
-
-The strategy targets market neutrality (dollar-neutral long/short positions) and mean-reversion horizons of 5–20 days.
+Positions are dollar-neutral after the hedge ratio. Target half-life is
+5–20 trading days; the time stop is 50 days.
 
 ---
 
 ## How It Works
 
 ### Universe Selection
-100 liquid technology stocks (GICS Sector 45) that pass hard pre-filters on price (>$10), average daily volume (>1M shares), market cap (>$2B), and SPY correlation (<0.90). Universe is reconstituted monthly.
+
+Candidate list is hardcoded in `src/data/fetch.py` (~95 S&P-style names
+across semiconductors, software, energy, financials, healthcare, staples,
+industrials, utilities, materials, consumer discretionary, and
+communication services). Monthly hard filters: price > $10, ADV > 1M
+shares, 30-day average dollar volume > $25M, 60-day SPY correlation < 0.90.
+Must be present in `data/sector_map.py`.
 
 ### Pair Discovery via Clustering
-K-means clustering runs on the pairwise correlation distance matrix over a 120-day rolling window. The number of clusters k is selected automatically via silhouette scoring (k ∈ [4, 20]). Only within-cluster pairs proceed to scoring — cross-cluster pairs are never evaluated.
+
+K-means on `D = 1 − ρ` over `CONFIG.clustering_window` (120 days). `k` is
+chosen by silhouette score in `[k_min, k_max]` = [4, 6]. Only
+within-cluster pairs are scored.
 
 ### Composite Score (Five Components)
-Each candidate pair is scored on five dimensions and ranked within its cluster:
 
-| Component | Weight | What It Measures |
+| Component | Weight | What it measures |
 |---|---|---|
-| Correlation Stability | 20% | Ratio of recent 60-day to 2-year historical correlation |
-| Johansen Cointegration | 30% | Statistical evidence that the spread is stationary |
-| Spread Half-Life | 25% | Days to revert halfway to the mean (target: 5–20 days) |
-| Volatility Compatibility | 15% | How well-matched the two stocks' volatilities are |
-| Fundamental Compatibility | 10% | P/S ratio and revenue growth similarity |
+| Correlation stability | 20% | Recent vs 252-day correlation (0 if recent ρ < 0.50) |
+| Johansen cointegration | 25% | `1 −` BH-adjusted p on a 252-day window; soft floor 0.40 |
+| Spread half-life | 30% | AR(1) days to revert halfway; **hard gate** [5, 20] |
+| Volatility compatibility | 15% | Dual-window vol ratio; discard if short-window ratio > 2.5 |
+| Sector compatibility | 10% | Same sector 1.0 / cross-sector 0.4 / unknown 0.5 |
 
-The top 1 pair per cluster proceeds to trading if it passes the absolute minimum composite score threshold.
+The scorer does **not** use P/S or revenue growth. Those fields are still
+fetched into `data/raw/fundamentals.parquet` but are unused.
+
+Pairs with formation β ≤ 0 are dropped. The top 1 pair per cluster proceeds
+if `composite_score >= 0.55`.
 
 ### Signal Generation
-For each confirmed pair, the hedge ratio β is estimated daily via rolling 60-day OLS regression on log prices. Entry and exit thresholds are based on the empirical percentile distribution of the spread — not a normal distribution assumption — to account for fat tails in tech stock spreads.
+
+Formation β, μ, and σ are locked at scoring (`formation_window` = 120).
+Daily z is `(s_t − μ_F) / σ_F`. A separate 60-day live β (`signal_window`)
+only resizes the short leg when it drifts more than 15%.
 
 | Signal | Condition | Action |
 |---|---|---|
-| Long spread | Spread < 2nd percentile | Long Stock A, Short Stock B |
-| Short spread | Spread > 98th percentile | Short Stock A, Long Stock B |
-| Take profit | Spread re-enters 40th–60th percentile | Close position |
-| Stop loss | Spread > 99.5th or < 0.5th percentile | Close position |
-| Time stop | Position open > 20 trading days | Close position |
+| Long spread | z < −1.5 | Long A, short B |
+| Short spread | z > +1.5 | Short A, long B |
+| Take profit | \|z\| < 0.5 | Close |
+| Stop loss | \|z\| > 3.5 | Close |
+| Time stop | Position open > 50 trading days | Close |
+| Momentum block | Either leg moved > 15% in 14 days | No new entry |
 
 ### Risk Management
-- Dollar-neutral sizing: long and short legs equal in dollar value after β adjustment
-- No stock may appear in more than one active pair simultaneously
-- Maximum gross leverage: 2.0×
-- Drawdown controls: position size reduction at 5% drawdown, full halt at 10%
-- VIX filter: no new entries when VIX > 28
+
+- Dollar-neutral sizing after β
+- No ticker in more than one active pair
+- Max gross leverage 2.0×; 10% cash buffer
+- Drawdown: size-down at 5%, halt at 10%
+- VIX: no new entries above 28; resume after 5 days below 25
+- 20-trading-day cooldown after a stop on the same pair
+- Empty scoring dates keep the last active pair list (do not flatten)
 
 ---
 
@@ -80,191 +115,173 @@ For each confirmed pair, the hedge ratio β is estimated daily via rolling 60-da
 ```
 arq-pairs-trading/
 ├── README.md                    ← You are here
-├── CLAUDE.md                    ← AI assistant context (read before coding)
-├── pyproject.toml               ← Python dependencies
-├── .env.example                 ← Environment variable template
+├── CLAUDE.md / AGENTS.md        ← AI assistant context
+├── pyproject.toml
 │
-├── docs/                        ← Strategy and architecture documentation
-│   ├── strategy.md              ← Full strategy specification (v2.0)
-│   ├── architecture.md          ← System design and data flow
-│   ├── data.md                  ← Data sources, schemas, known issues
-│   ├── implementation-plan.md   ← Two-week build roadmap with owners
-│   ├── decisions.md             ← Architecture decision log
-│   └── open-questions.md        ← Unresolved items tracker
+├── docs/
+│   ├── architecture.md          ← Implemented pipeline and contracts
+│   ├── strategy.md              ← Original v2.0 spec (not all live)
+│   ├── diagnostics.md           ← Issues, fixes, backtest results
+│   ├── data.md                  ← Sources and parquet schemas
+│   ├── file-structure.md        ← Canonical directory tree
+│   └── project-structure.md     ← File-by-file inventory
 │
 ├── data/
-│   ├── sector_map.py            ← Ticker → subsector mapping (committed)
-│   ├── raw/                     ← Fetched data (gitignored)
-│   └── processed/               ← Derived data cache (gitignored)
+│   ├── sector_map.py            ← Committed ticker → sector labels
+│   ├── raw/                     ← Gitignored fetch output
+│   └── processed/               ← Gitignored derived cache
 │
 ├── src/
-│   ├── config.py                ← All tunable parameters (single source of truth)
-│   ├── data/                    ← Fetch, clean, load
-│   ├── universe/                ← Hard pre-filters
-│   ├── clustering/              ← Correlation matrix, K-means
-│   ├── scoring/                 ← Five composite score components
-│   ├── signals/                 ← Hedge ratio, spread, entry/exit signals
-│   ├── regime/                  ← VIX, earnings blackout filters
-│   ├── backtest/                ← Simulation engine, portfolio, costs, execution
-│   └── metrics/                 ← Performance stats, report generation
+│   ├── config.py                ← All tunables
+│   ├── data/                    ← fetch, clean, load
+│   ├── universe/                ← Monthly hard filters
+│   ├── clustering/              ← Distance matrix, K-means
+│   ├── scoring/                 ← Five components + composite
+│   ├── signals/                 ← Hedge ratio, spread, z-score signals
+│   ├── regime/                  ← VIX, earnings blackout
+│   ├── backtest/                ← Engine, portfolio, costs, execution
+│   └── metrics/                 ← Stubs (script 05 not implemented)
 │
-├── scripts/
-│   ├── 01_fetch_data.py         ← Run once to download all data
-│   ├── 02_build_universe.py     ← Clean data and apply universe filters
-│   ├── 03_run_backtest.py       ← Main backtest entry point
-│   ├── 04_walkforward.py        ← Walk-forward validation
-│   └── 05_generate_report.py   ← Charts and tables for final report
-│
-├── tests/                       ← pytest unit tests (run before every PR)
-│   ├── fixtures/                ← Synthetic test datasets
-│   ├── test_clustering.py
-│   ├── test_scoring.py
-│   ├── test_signals.py
-│   └── test_backtest.py
-│
-└── outputs/                     ← All generated results (gitignored)
-    ├── backtest_results/
-    ├── report/
-    └── data_quality_report.txt
+├── scripts/                     ← 01 fetch → 02 universe → 03 backtest → 04 OOS slice
+├── tests/                       ← pytest, synthetic data only
+└── outputs/                     ← Gitignored results
 ```
 
-For full descriptions of every file, see [`docs/architecture.md`](docs/architecture.md).
+Full tree: [`docs/file-structure.md`](docs/file-structure.md).
+File descriptions: [`docs/project-structure.md`](docs/project-structure.md).
 
 ---
 
 ## Quick Start
 
 ### Prerequisites
+
 - Python 3.11+
-- `uv` (recommended) or `poetry` for dependency management
+- `uv` (recommended)
 - Internet access for the initial data fetch
 
 ### Installation
 
 ```bash
-# Clone the repo
 git clone https://github.com/your-org/arq-pairs-trading.git
 cd arq-pairs-trading
-
-# Install dependencies with uv
 uv sync
-
-# Or with poetry
-poetry install
-
-# Copy environment template (add any API keys if needed)
 cp .env.example .env
 ```
+
+Set `ALPHA_VANTAGE_KEY` in `.env` if you want SPY from Alpha Vantage;
+otherwise the fetcher falls back to yfinance.
 
 ### First-Time Setup
 
 ```bash
-# Step 1: Fetch all historical data (run once, takes 2–5 minutes)
-python scripts/01_fetch_data.py
-
-# Step 2: Clean data and build the universe history
-python scripts/02_build_universe.py
-
-# Check data/data_quality_report.txt for any issues before proceeding
+uv run python scripts/01_fetch_data.py --disable-proxy
+uv run python scripts/02_build_universe.py
 ```
+
+Review `outputs/data_quality_report.txt` before running the backtest.
 
 ---
 
 ## Running the Pipeline
 
-Run scripts in numbered order. Each script depends on the outputs of the previous one.
+Run scripts in numbered order.
 
 ```bash
-# Full backtest on training period
-python scripts/03_run_backtest.py
+# Full-calendar backtest (CONFIG.backtest_start_date → backtest_end_date)
+uv run python scripts/03_run_backtest.py
 
-# Walk-forward validation across quarterly windows
-python scripts/04_walkforward.py
-
-# Generate all charts and tables for the report
-python scripts/05_generate_report.py
+# Slice the last CONFIG.oos_fraction of those CSVs (does not re-fit)
+uv run python scripts/04_walkforward.py
 ```
 
-Results are written to `outputs/`. The NAV curve, trade log, and per-pair P&L summary are in `outputs/backtest_results/`. Report charts are in `outputs/report/`.
+`scripts/05_generate_report.py` is a stub. There is no generated report yet.
 
-### Sensitivity Analysis
+Results:
 
-To test alternative parameter sets, pass a config override to the backtest script:
+| File | Writer |
+|---|---|
+| `outputs/backtest_results/trade_log.csv` | Script 03 |
+| `outputs/backtest_results/nav_series.csv` | Script 03 |
+| `outputs/backtest_results/pair_daily_mtm.csv` | Script 03 |
+| `outputs/backtest_results/oos_*.csv` | Script 04 |
 
-```bash
-python scripts/03_run_backtest.py --entry-percentile 5 --exit-percentile 95
-```
-
-All available parameters are documented in `src/config.py`.
+Script 03 has no CLI parameter overrides. Change values in `src/config.py`
+(or construct a `StrategyConfig` in code) and re-run.
 
 ---
 
 ## Configuration
 
-All tunable parameters live in `src/config.py` as a frozen dataclass. **Never hardcode parameter values in module files.** Always import `CONFIG` from `src/config.py`.
-
-Key parameters and their defaults:
+All tunables live in `src/config.py` as a frozen dataclass. Import `CONFIG`.
+Never hardcode parameters in module files.
 
 | Parameter | Default | Description |
 |---|---|---|
-| `clustering_window` | 120 days | Rolling window for correlation matrix used in clustering |
-| `signal_window` | 60 days | Rolling window for β, μ, σ, and empirical percentiles |
-| `k_min / k_max` | 4 / 20 | Range of cluster counts evaluated by silhouette scoring |
-| `entry_percentile_low` | 2.0 | Spread percentile threshold for long entry |
-| `entry_percentile_high` | 98.0 | Spread percentile threshold for short entry |
-| `exit_percentile_low` | 40.0 | Lower bound of take-profit zone |
-| `exit_percentile_high` | 60.0 | Upper bound of take-profit zone |
-| `min_composite_score` | 0.70 | Minimum threshold for a cluster finalist to be traded |
-| `short_borrow_annual` | 0.02 | Flat annual short borrow cost assumption |
-| `random_seed` | 42 | Fixed seed for K-means reproducibility |
+| `clustering_window` | 120 | Correlation matrix for K-means |
+| `formation_window` | 120 | Locked β / μ / σ used for z-score |
+| `signal_window` | 60 | Live hedge β for share resize only |
+| `johansen_window` | 252 | Johansen lookback |
+| `k_min` / `k_max` | 4 / 6 | Silhouette-scored cluster count |
+| `entry_zscore` | 1.5 | Absolute z to enter |
+| `take_profit_zscore` | 0.5 | Absolute z to take profit |
+| `stop_loss_zscore` | 3.5 | Absolute z to stop |
+| `time_stop_days` | 50 | Force close after this many trading days |
+| `min_composite_score` | 0.55 | Floor for a cluster finalist |
+| `min_cointegration_score` | 0.40 | Soft floor on `1 − p_adj` |
+| `min_formation_beta` | 0.0 | Drop non-positive formation β |
+| `backtest_start_date` | 2022-01-01 | First simulated trading day |
+| `backtest_end_date` | 2024-12-31 | Last simulated trading day |
+| `oos_fraction` | 0.30 | Trailing slice used by script 04 |
+| `initial_capital` | 100000 | Starting NAV |
+| `random_seed` | 42 | K-means reproducibility |
 
 ---
 
 ## Testing
 
-Tests use synthetic datasets in `tests/fixtures/` and do not require internet access. Run the full suite before opening any PR.
-
 ```bash
-# Run all tests
-pytest
-
-# Run a specific module
-pytest tests/test_scoring.py
-
-# Run with coverage report
-pytest --cov=src --cov-report=term-missing
+uv run pytest
+uv run pytest tests/test_scoring.py
+uv run pytest --cov=src --cov-report=term-missing
 ```
 
-All tests should pass in under 30 seconds. If a test requires real market data or network access, it belongs in a notebook, not the test suite.
+Tests build synthetic frames in-process. They never call yfinance or read
+`data/`. The suite should finish in under 30 seconds.
 
 ---
 
 ## Team and Module Ownership
 
-| Member | Owns | Presentation |
-|---|---|---|
-| Barrett | `universe.py`, `data.py` | Stock universe, date ranges, liquidity filter |
-| Althan | `clustering.py`, assist `pair_selection.py` | Clustering/correlation visuals |
-| Anvay | `signals.py`, `backtest.py` | Trading logic and trade simulation results |
-| Nanshu | `metrics.py`, `plots.py` | Results charts, help assemble final deck |
+| Member | Owns |
+|---|---|
+| Barrett | `src/data/`, `src/universe/`, `src/config.py`, `data/sector_map.py`, `scripts/01`, `scripts/02` |
+| Althan | `src/clustering/`, `src/scoring/` |
+| Anvay | `src/signals/`, `src/regime/`, `src/backtest/` |
+| Nanshu | `src/metrics/`, `scripts/03`, `scripts/04`, `scripts/05` |
 
-Each owner is responsible for the unit tests covering their module.
+Cross-module changes need a PR reviewed by the other owner.
 
 ---
 
 ## Known Limitations
 
-The following are intentional simplifications made for the project scope. Each is documented in `docs/data.md` and should be discussed in the final report.
+**Survivorship bias** — yfinance only returns currently listed names.
 
-**Survivorship bias** — yfinance only returns currently-listed stocks. Stocks that were delisted or acquired during the backtest period are excluded from the universe. This overstates performance relative to a live strategy that would have held those positions.
+**Fundamentals snapshot unused** — P/S and TTM growth are fetched once and
+are not point-in-time. Live scoring uses sector labels only.
 
-**Fundamental data staleness** — P/S ratios and revenue growth figures are used as a current snapshot rather than as true point-in-time historical values. A production implementation would use as-reported data with earnings release date lags.
+**Short borrow** — Flat 2% annualized on every short leg.
 
-**Short borrow costs** — A flat 2% annualized assumption is applied to all short positions. Actual borrow rates vary by stock and market conditions and can be significantly higher for heavily-shorted names.
+**Earnings blackout** — Last 5 trading days of each calendar quarter, not
+per-name earnings dates.
 
-**Earnings blackout** — The blackout window uses end-of-quarter approximation (last 5 trading days of March, June, September, December) rather than per-company earnings dates.
+**Script 04 is a slice** — It does not re-cluster or re-score on rolling
+windows. OOS is the last 30% of the same continuous simulation.
 
-**Multiple testing correction** — Benjamini-Hochberg FDR correction is applied within clusters but not globally across all pairs. A more rigorous implementation would correct globally.
+**Script 05 / metrics** — Not implemented.
+
+Empirical results and open issues: [`docs/diagnostics.md`](docs/diagnostics.md).
 
 ---
 
@@ -272,13 +289,14 @@ The following are intentional simplifications made for the project scope. Each i
 
 | Metric | Target |
 |---|---|
-| Sharpe Ratio (net of costs) | > 1.50 |
-| Sortino Ratio | > 2.0 |
-| Maximum Drawdown | < 10% |
-| Win Rate | 60–70% |
-| OOS vs. in-sample deviation | < 30% on all metrics |
+| Sharpe (net of costs) | > 1.50 |
+| Sortino | > 2.0 |
+| Maximum drawdown | < 10% |
+| Win rate | 60–70% |
+| OOS vs in-sample deviation | < 30% on all metrics |
 
-Benchmark: Buy-and-hold XLK (Technology Select Sector ETF), equal-weighted and rebalanced monthly.
+These are project goals, not measured results. See `docs/diagnostics.md`
+for actual NAV and trade stats.
 
 ---
 

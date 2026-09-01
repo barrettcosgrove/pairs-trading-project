@@ -2,6 +2,12 @@
 
 # ARQ Pairs Trading — Implementation Plan
 
+> **Historical two-week sprint plan.** Ownership paths below still apply
+> except Anvay no longer owns a live `src/tiering/` path (leftover on
+> disk; engine does not call it). Current tree:
+> [`file-structure.md`](file-structure.md). Live contracts:
+> [`architecture.md`](architecture.md).
+
 This is the team's day-to-day coordination document. It is updated at
 standup each morning — mark tasks complete, add blockers, and update
 ownership as work shifts. The goal is that anyone can open this file and
@@ -20,7 +26,7 @@ know exactly where the project stands.
 |---|---|---|
 | Barrett | `src/data/`, `src/universe/`, `src/config.py`, `data/sector_map.py`, `scripts/01`, `scripts/02`, `tests/fixtures/`, repo setup | Universe selection, data pipeline, known limitations |
 | Althan | `src/clustering/`, `src/scoring/` | Clustering methodology, composite score components |
-| Anvay | `src/tiering/`, `src/signals/`, `src/regime/`, `src/backtest/` | Signal generation, backtest results, trade simulation |
+| Anvay | `src/signals/`, `src/regime/`, `src/backtest/` | Signal generation, backtest results, trade simulation |
 | Nanshu | `src/metrics/`, `scripts/03`, `scripts/04`, `scripts/05` | Performance metrics, charts, walk-forward results |
 
 ---

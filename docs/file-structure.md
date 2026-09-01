@@ -1,8 +1,10 @@
 # ARQ Pairs Trading — File Structure
 
-This is the canonical file-structure reference for the project. Generated
-data, virtual environments, caches, and report outputs are intentionally
-gitignored and should be regenerated locally.
+Canonical tree of the repository as it exists now. Generated data, virtual
+environments, caches, and report outputs are gitignored and regenerated locally.
+
+**Live behavior** is `src/config.py` plus the code. Original product spec:
+`docs/strategy.md`. Empirical issues and backtest rounds: `docs/diagnostics.md`.
 
 ```text
 arq-pairs-trading/
@@ -11,71 +13,78 @@ arq-pairs-trading/
 ├── AGENTS.md
 ├── CLAUDE.md
 ├── README.md
+├── description.md
+├── file-structure.md              # short pointer → this file
 ├── pyproject.toml
 ├── sanity_check.py
 ├── uv.lock
+│
 ├── data/
-│   ├── sector_map.py
-│   ├── raw/                         # gitignored generated fetch outputs
+│   ├── sector_map.py              # committed ticker → sector labels
+│   ├── raw/                       # gitignored
 │   │   ├── prices.parquet
 │   │   ├── fundamentals.parquet
 │   │   ├── regime.parquet
 │   │   ├── fetch_manifest.json
 │   │   └── fundamentals_checkpoint.parquet
-│   └── processed/                   # gitignored generated pipeline outputs
+│   └── processed/                 # gitignored
 │       ├── returns.parquet
 │       ├── universe_history.parquet
-│       └── correlation_matrices/
-│           └── YYYY-MM.parquet
+│       └── correlation_matrices/  # optional monthly D = 1−ρ cache
+│
 ├── docs/
 │   ├── architecture.md
 │   ├── data.md
 │   ├── decisions.md
-│   ├── file-structure.md
+│   ├── diagnostics.md
+│   ├── file-structure.md          # this file
 │   ├── git-conventions.md
 │   ├── implementation-plan.md
 │   ├── llm_guide.md
 │   ├── module_checlist.md
 │   ├── open-questions.md
+│   ├── project-structure.md
 │   └── strategy.md
-├── outputs/                         # gitignored generated reports/results
+│
+├── outputs/                       # gitignored
 │   ├── backtest_results/
-│   ├── report/
+│   │   ├── trade_log.csv
+│   │   ├── nav_series.csv
+│   │   ├── pair_daily_mtm.csv
+│   │   ├── oos_trade_log.csv
+│   │   ├── oos_nav_series.csv
+│   │   └── oos_pair_daily_mtm.csv
+│   ├── report/                    # unused until script 05 is implemented
 │   └── data_quality_report.txt
+│
 ├── scripts/
 │   ├── 01_fetch_data.py
 │   ├── 02_build_universe.py
 │   ├── 03_run_backtest.py
 │   ├── 04_walkforward.py
-│   └── 05_generate_report.py
+│   └── 05_generate_report.py      # stub
+│
 ├── src/
 │   ├── config.py
 │   ├── backtest/
-│   │   ├── __init__.py
 │   │   ├── costs.py
 │   │   ├── engine.py
 │   │   ├── execution.py
 │   │   └── portfolio.py
 │   ├── clustering/
-│   │   ├── __init__.py
 │   │   ├── correlation.py
 │   │   └── kmeans.py
 │   ├── data/
-│   │   ├── __init__.py
 │   │   ├── clean.py
 │   │   ├── fetch.py
 │   │   └── load.py
 │   ├── metrics/
-│   │   ├── __init__.py
-│   │   ├── performance.py
-│   │   └── reporting.py
+│   │   ├── performance.py         # stub
+│   │   └── reporting.py           # stub
 │   ├── regime/
-│   │   ├── __init__.py
-│   │   ├── bollinger.py
 │   │   ├── earnings.py
 │   │   └── vix.py
 │   ├── scoring/
-│   │   ├── __init__.py
 │   │   ├── candidate_pairs.py
 │   │   ├── cointegration.py
 │   │   ├── composite.py
@@ -84,397 +93,41 @@ arq-pairs-trading/
 │   │   ├── halflife.py
 │   │   └── volatility.py
 │   ├── signals/
-│   │   ├── __init__.py
 │   │   ├── entry_exit.py
 │   │   ├── hedge_ratio.py
 │   │   └── spread.py
-│   ├── tiering/
+│   ├── tiering/                   # leftover; not called by the engine
 │   │   ├── __init__.py
-│   │   ├── assign.py
-│   │   └── kpss.py
+│   │   └── assign.py
+│   ├── scrap/                     # old prototypes; not the live pipeline
 │   └── universe/
-│       ├── __init__.py
 │       └── filter.py
-└── tests/
-    ├── fixtures/
-    │   └── .gitkeep
-    ├── test_backtest.py
-    ├── test_clustering.py
-    ├── test_cointegration.py
-    ├── test_correlation_stability.py
-    ├── test_halflife.py
-    ├── test_scoring.py
-    ├── test_scoring_integration.py
-    ├── test_signals.py
-    └── test_volatility.py
-```
-
-## Root Files
-
-| File | Purpose |
-|---|---|
-| `README.md` | Quick-start guide for setup and common commands. |
-| `CLAUDE.md` | Persistent project context and coding rules for AI assistants. |
-| `AGENTS.md` | Agent-facing project guidance. |
-| `pyproject.toml` | Project metadata, dependencies, dev dependency groups, and build configuration. |
-| `uv.lock` | Locked dependency graph for reproducible installs. |
-| `.gitignore` | Excludes raw data, processed data, outputs, caches, virtual environments, and secrets. |
-| `.env.example` | Template for local environment variables. The real `.env` is gitignored. |
-| `sanity_check.py` | Local validation helper for quick project checks. |
-
-## Key Directories
-
-| Directory | Purpose |
-|---|---|
-| `docs/` | Strategy, architecture, data contracts, decisions, workflow, and team guidance. |
-| `data/` | Hand-authored `sector_map.py` plus gitignored raw/processed generated data. |
-| `scripts/` | Numbered entry points for the pipeline: fetch data, build universe, run backtest, walk-forward validation, and report generation. |
-| `src/` | Production Python package, organized by pipeline stage. |
-| `tests/` | Pytest suite using synthetic fixtures only; no network or parquet reads in unit tests. |
-| `outputs/` | Gitignored generated reports, charts, logs, and backtest outputs. |
-
-## Source Modules
-
-| Module | Purpose |
-|---|---|
-| `src/config.py` | Frozen `StrategyConfig` with all tunable parameters. |
-| `src/data/` | Fetch, clean, and load data. `fetch.py` is the only module that talks to external data providers. |
-| `src/universe/` | Monthly hard filters: sector, liquidity, price, 30-day dollar volume, and SPY correlation. |
-| `src/clustering/` | Correlation distance matrix construction and silhouette-scored K-means clustering. |
-| `src/scoring/` | Candidate-pair generation and component scoring: correlation stability, cointegration, half-life, volatility, fundamentals, and composite aggregation. |
-| `src/tiering/` | KPSS confirmation and high/low conviction tier assignment. |
-| `src/signals/` | Hedge ratio, spread, and entry/exit signal generation. |
-| `src/regime/` | Bollinger, VIX, and earnings blackout filters. |
-| `src/backtest/` | Backtest loop, portfolio accounting, execution simulation, and transaction costs. |
-| `src/metrics/` | Performance metrics and report output generation. |
-
-## Notes
-
-- `data/raw/`, `data/processed/`, and `outputs/` are gitignored generated artifacts.
-- `codex-code/` may appear locally as an auxiliary workspace; it is not part of the main pipeline structure.
-- This document replaces the older root-level `file-structure.md` and `docs/project-structure.md` duplicates.
-# ARQ Pairs Trading — Project File Structure
-
-> **How to read this document:** Every file and directory includes a label and description. Labels classify the file's role in the system. Descriptions explain what it contains and why it exists.
-
----
-
-# ARQ Pairs Trading — File Tree
-
-```
-arq-pairs-trading/
-│
-├── README.md
-├── CLAUDE.md
-├── pyproject.toml
-├── .gitignore
-├── .env.example
-│
-├── docs/
-│   ├── strategy.md
-│   ├── architecture.md
-│   ├── data.md
-│   ├── implementation-plan.md
-│   ├── decisions.md
-│   └── open-questions.md
-│
-├── data/
-│   ├── sector_map.py
-│   ├── raw/                          # gitignored
-│   │   ├── prices.parquet
-│   │   ├── fundamentals.parquet
-│   │   └── regime.parquet
-│   └── processed/                    # gitignored
-│       ├── returns.parquet
-│       ├── universe_history.parquet
-│       └── correlation_matrices/
-│           └── YYYY-MM.parquet
-│
-├── src/
-│   ├── config.py
-│   │
-│   ├── data/
-│   │   ├── fetch.py
-│   │   ├── clean.py
-│   │   └── load.py
-│   │
-│   ├── universe/
-│   │   └── filter.py
-│   │
-│   ├── clustering/
-│   │   ├── correlation.py
-│   │   └── kmeans.py
-│   │
-│   ├── scoring/
-│   │   ├── candidate_pairs.py
-│   │   ├── correlation_stability.py
-│   │   ├── cointegration.py
-│   │   ├── halflife.py
-│   │   ├── volatility.py
-│   │   ├── fundamentals.py
-│   │   └── composite.py
-│   │
-│   ├── signals/
-│   │   ├── hedge_ratio.py
-│   │   ├── spread.py
-│   │   └── entry_exit.py
-│   │
-│   ├── regime/
-│   │   ├── vix.py
-│   │   └── earnings.py
-│   │
-│   ├── backtest/
-│   │   ├── engine.py
-│   │   ├── portfolio.py
-│   │   ├── costs.py
-│   │   └── execution.py
-│   │
-│   └── metrics/
-│       ├── performance.py
-│       └── reporting.py
-│
-├── scripts/
-│   ├── 01_fetch_data.py
-│   ├── 02_build_universe.py
-│   ├── 03_run_backtest.py
-│   ├── 04_walkforward.py
-│   └── 05_generate_report.py
 │
 ├── tests/
 │   ├── fixtures/
+│   ├── test_backtest.py
 │   ├── test_clustering.py
+│   ├── test_cointegration.py
+│   ├── test_composite.py
+│   ├── test_correlation_stability.py
+│   ├── test_halflife.py
 │   ├── test_scoring.py
+│   ├── test_scoring_integration.py
 │   ├── test_signals.py
-│   └── test_backtest.py
+│   └── test_volatility.py
 │
-└── outputs/                          # gitignored
-    ├── backtest_results/
-    ├── report/
-    └── data_quality_report.txt
+├── scratch/                       # ad-hoc analysis scripts
+└── working_model/                 # earlier prototype; not wired to scripts/
 ```
 
-## Root Directory
+## Not in the live pipeline
 
-```
-arq-pairs-trading/
-```
+| Path | Status |
+|---|---|
+| `src/tiering/` | Present on disk. Engine scores → trades directly. Do not import in new code. |
+| `src/regime/bollinger.py` | Removed. Do not reintroduce. |
+| `src/metrics/performance.py`, `reporting.py` | Header stubs only. |
+| `scripts/05_generate_report.py` | Header stub only. |
+| `src/scrap/`, `working_model/`, `scratch/` | Prototypes / one-off analysis. |
 
-| File | Label | Description |
-|---|---|---|
-| `README.md` | **Entry Point** | Quick-start guide for new teammates. Explains how to install dependencies, fetch data, and run the backtest in under 10 minutes. Every teammate reads this first. |
-| `CLAUDE.md` | **AI Context** | Persistent instructions for Claude Code. Contains project architecture summary, stack, coding conventions, key file locations, and common mistakes to avoid. Committed to the repo so all teammates get the same Claude behavior. |
-| `pyproject.toml` | **Dependency Manifest** | Declares all Python dependencies and project metadata. Managed by `uv` or `poetry`. Pin exact versions here for reproducibility. |
-| `.gitignore` | **Version Control Filter** | Excludes raw data files, processed cache, outputs, virtual environments, and `.pyc` files from git. Data files are never committed — only code and docs are. |
-| `.env.example` | **Environment Template** | Template for any API keys or environment-specific settings (e.g., data provider credentials). Teammates copy this to `.env` locally. The `.env` file itself is gitignored. |
-
----
-
-## `/docs` — Strategy and Architecture Documentation
-
-> **Label: Documentation Layer**
-> All markdown files the team maintains collaboratively. Committed to the repo. These are the source of truth for strategy decisions, architecture choices, and open questions. Claude Code reads these at the start of every session.
-
-| File | Label | Description |
-|---|---|---|
-| `docs/strategy.md` | **Strategy Specification** | The full refined strategy spec (v2.0). Covers universe selection, clustering, composite scoring, tiering, regime filters, signal generation, exit rules, position sizing, and risk management. This is the canonical reference — if code and this document disagree, fix the code. |
-| `docs/architecture.md` | **System Design** | Describes the pipeline pattern, component breakdown, data flow between modules, and technology stack decisions with rationale. Includes a diagram of the full pipeline from raw data to metrics. |
-| `docs/data.md` | **Data Reference** | Documents every data source used (yfinance, VIX, SPY, fundamentals), the schema of each parquet file, known data quality issues, limitations (survivorship bias, fundamental data staleness), and the forward-fill policy for missing days. |
-| `docs/implementation-plan.md` | **Build Roadmap** | Sequenced two-week build plan with module owners, function signatures, and data contracts between modules. Updated as work completes. The team's day-to-day coordination document. |
-| `docs/decisions.md` | **Architecture Decision Log** | Records every significant design decision, why it was made, and what alternatives were rejected. Prevents revisiting settled decisions. Example entry: "Why we use Johansen instead of Engle-Granger." |
-| `docs/open-questions.md` | **Unresolved Issues Tracker** | Running list of things the team hasn't decided yet, assigned to a person, with a target resolution date. Cleared as decisions are made and logged in `decisions.md`. |
-
----
-
-## `/data` — Data Storage
-
-> **Label: Data Layer**
-> All data files. The `raw/` and `processed/` subdirectories are gitignored — they are generated by running the fetch and clean scripts. Only `sector_map.py` is committed because it is hand-authored code, not generated data.
-
-| File / Directory | Label | Description |
-|---|---|---|
-| `data/sector_map.py` | **Universe Metadata** | Hardcoded dictionary mapping each ticker to its GICS subsector (e.g., `"NVDA": "semiconductors"`). Manually maintained. Used by the universe filter and the subsector concentration constraint in risk management. Committed to the repo. |
-| `data/raw/` | **Raw Data Cache** *(gitignored)* | Parquet files as fetched from yfinance. Never modified after fetch. If something looks wrong, delete and re-fetch rather than edit in place. |
-| `data/raw/prices.parquet` | **Raw Price Data** | Daily OHLCV for all ~120 candidate tickers, 3.5 years of history. Columns: `ticker, date, open, high, low, close, adj_close, volume`. Split-adjusted and dividend-adjusted by yfinance. |
-| `data/raw/fundamentals.parquet` | **Raw Fundamental Data** | Snapshot of price-to-sales ratio and trailing twelve-month revenue growth for each ticker, fetched once and refreshed quarterly. Columns: `ticker, fetch_date, price_to_sales, revenue_growth_ttm`. |
-| `data/raw/regime.parquet` | **Raw Regime Data** | Daily VIX close and SPY adjusted close, 3.5 years. Used by the VIX portfolio filter and the SPY correlation pre-filter in universe selection. |
-| `data/processed/` | **Derived Data Cache** *(gitignored)* | Outputs of the clean and transform steps. Regenerated by running `scripts/02_build_universe.py`. Safe to delete and rebuild at any time. |
-| `data/processed/returns.parquet` | **Daily Log Returns** | Daily log returns for every ticker in the filtered universe. Columns: `ticker, date, log_return`. Input to the correlation matrix and all rolling window calculations. |
-| `data/processed/universe_history.parquet` | **Point-in-Time Universe** | Records which tickers were in the universe at each monthly reconstitution date. Columns: `date, ticker, passed_filters`. Used to avoid look-ahead bias when constructing the backtest universe each month. |
-| `data/processed/correlation_matrices/` | **Monthly Correlation Snapshots** | One parquet file per month (e.g., `2024-01.parquet`), each containing the full N×N pairwise distance matrix for that month's 120-day window. Cached so clustering does not re-compute correlations on every backtest run. |
-
----
-
-## `/src` — Source Code
-
-> **Label: Application Layer**
-> All production Python code, organized by pipeline stage. Each subdirectory owns one conceptual component of the strategy. Teammates can work on different subdirectories in parallel without merge conflicts.
-
----
-
-### `src/config.py`
-
-| File | Label | Description |
-|---|---|---|
-| `src/config.py` | **Central Configuration** | Single source of truth for every tunable parameter in the strategy: window lengths, percentile thresholds, composite score weights, tier pool sizes, cost assumptions, drawdown limits. Implemented as a frozen dataclass so parameters are immutable at runtime. Pass `CONFIG` into every function that needs parameters — never hardcode values in module files. |
-
----
-
-### `src/data/` — Data Access
-
-> **Label: Data Access Module**
-> Handles all reading and writing of data files. Nothing outside this module should call yfinance or read parquet files directly.
-
-| File | Label | Description |
-|---|---|---|
-| `src/data/fetch.py` | **Data Fetcher** | Calls yfinance to download prices, fundamentals, VIX, and SPY. Writes results to `data/raw/`. Designed to run once at project start and be re-run only for quarterly refreshes. Includes retry logic and logs what was fetched and any tickers that failed. |
-| `src/data/clean.py` | **Data Cleaner** | Validates raw data: checks for missing days (forward-fills ≤1 day, flags ≥2 consecutive missing), removes tickers with >5 missing days in trailing 90, logs all issues to `outputs/data_quality_report.txt`. Writes cleaned log returns to `data/processed/returns.parquet`. |
-| `src/data/load.py` | **Data Loader** | Read-only interface for all pipeline stages. Provides typed functions like `load_prices()`, `load_returns()`, `load_vix()`. All other modules import from here — they never call `pd.read_parquet()` directly. Centralizes path management so file location changes only require editing one file. |
-
----
-
-### `src/universe/` — Universe Selection
-
-> **Label: Universe Filter Module**
-> Applies the hard pre-filters to determine which stocks are in the investable universe each month.
-
-| File | Label | Description |
-|---|---|---|
-| `src/universe/filter.py` | **Universe Filter** | Applies all five hard pre-filters (sector, liquidity, price, market cap, SPY correlation) to the full candidate list. Returns a list of passing tickers for a given date. Writes results to `data/processed/universe_history.parquet`. Also enforces the ≥8 subsector diversity requirement and logs how many stocks pass each filter (useful for debugging). |
-
----
-
-### `src/clustering/` — Pair Discovery
-
-> **Label: Clustering Module**
-> Groups the filtered universe into clusters of co-moving stocks to reduce the candidate pair space from ~4,950 to ~400-600 before expensive statistical testing.
-
-| File | Label | Description |
-|---|---|---|
-| `src/clustering/correlation.py` | **Correlation Matrix Builder** | Computes pairwise Pearson correlations from daily log returns over the 120-day clustering window. Converts to a distance matrix (D = 1 - ρ), drops tickers with incomplete history in the trailing window, and saves/loads monthly snapshots under `data/processed/correlation_matrices/`. |
-| `src/clustering/kmeans.py` | **Silhouette-Scored K-Means** | Runs K-means over the distance matrix for k in the configured range (`CONFIG.k_min` to `CONFIG.k_max`, currently 4–6). Uses `CONFIG.kmeans_restarts` restarts and `CONFIG.random_seed` for reproducibility, validates the matrix contract, and returns cluster assignments. Logs the winning k and silhouette score at INFO level. |
-
----
-
-### `src/scoring/` — Composite Pair Scoring
-
-> **Label: Scoring Module**
-> Computes the five-component composite score that ranks candidate pairs within each cluster. Each component is its own file so teammates can develop and test them independently.
-
-| File | Label | Description |
-|---|---|---|
-| `src/scoring/candidate_pairs.py` | **Candidate Pair Builder** | Expands clustering output into all unique unordered within-cluster ticker pairs. Returns a DataFrame with `ticker_a`, `ticker_b`, and `cluster_id`, and skips singleton clusters that cannot form a pair. |
-| `src/scoring/correlation_stability.py` | **Correlation Stability Scorer** | Computes recent pair return correlation over `CONFIG.signal_window` and compares it with a 1-year historical baseline (`CONFIG.correlation_stability_historical_window`). Returns 0.0 when recent correlation is below `CONFIG.min_recent_correlation`; otherwise scores stability as `1 - abs(recent_corr - historical_corr)`, clipped to `[0, 1]`. Also provides a batch helper for scoring candidate-pair DataFrames. |
-| `src/scoring/cointegration.py` | **Johansen Cointegration Scorer** | Runs the Johansen trace test on the pair's log prices. Applies Benjamini-Hochberg FDR correction across all tested pairs in the cluster. Returns the adjusted p-value (lower = better). Pairs failing at BH-corrected p ≥ 0.10 are discarded before normalization. Also used by the tiering module for formal confirmation. |
-| `src/scoring/halflife.py` | **Spread Half-Life Scorer** | Fits an AR(1) regression of spread change on lagged spread level to estimate mean-reversion speed. Computes half-life as log(2) / |slope|. Discards pairs with half-life outside [5, 20] days or positive slope (diverging pairs). Returns score of 1.0 for any pair within range. |
-| `src/scoring/volatility.py` | **Volatility Compatibility Scorer** | Computes volatility ratio (larger/smaller) over both 20-day and 120-day windows. Combines with 60% weight on the short window and 40% on the long. Discards pairs where the short-window ratio exceeds 2.5. Lower combined ratio scores higher. |
-| `src/scoring/fundamentals.py` | **Fundamental Compatibility Scorer** | Computes P/S ratio similarity (ratio of higher to lower, target near 1.0) and revenue growth rate similarity (absolute difference in annual growth rates, target < 10 pp). Scores are normalized and averaged. Applies a mild penalty when both stocks exceed 30× P/S. Scores are locked at quarterly boundaries and held constant until the next refresh. |
-| `src/scoring/composite.py` | **Composite Score Aggregator** | Imports all five component scorers. Applies global minimum gates (correlation, cointegration, half-life, volatility) before scoring. Computes an absolute score and applies a minimum threshold boundary. Returns exactly 1 finalist pair per cluster. |
-
----
-
-### `src/signals/` — Signal Generation
-
-> **Label: Signal Module**
-> Computes the hedge ratio, spread, and empirical percentile thresholds for each confirmed pair daily.
-
-| File | Label | Description |
-|---|---|---|
-| `src/signals/hedge_ratio.py` | **Rolling Hedge Ratio Estimator** | Fits OLS regression `log(P_A) = α + β log(P_B) + ε` over the 60-day rolling window daily. Returns β and α. Flags hedge ratios that have flipped sign since trade entry. Triggers a rebalance flag when `|β_today - β_entry| > 0.15`. |
-| `src/signals/spread.py` | **Spread Calculator** | Computes `spread = log(P_A) - β × log(P_B)` using the current day's hedge ratio. Maintains the rolling 60-day empirical distribution of the spread. Returns spread value and its current percentile within the trailing distribution. |
-| `src/signals/entry_exit.py` | **Entry and Exit Signal Generator** | Applies the empirical percentile entry thresholds (2nd/98th) and exit thresholds (40th-60th for take profit, 0.5th/99.5th for stop loss). Returns one of: `LONG_SPREAD`, `SHORT_SPREAD`, `TAKE_PROFIT`, `STOP_LOSS`, `TIME_STOP`, or `HOLD` for each pair on each day. |
-
----
-
-### `src/regime/` — Market Regime Filters
-
-> **Label: Regime Filter Module**
-> Determines whether market conditions are suitable for opening new positions, at both the pair level and portfolio level.
-
-| File | Label | Description |
-|---|---|---|
-| `src/regime/vix.py` | **VIX Portfolio Filter** | Reads daily VIX close. Blocks all new position entries when VIX > 28. Resumes when VIX stays below 25 for 5 consecutive trading days. Exposes a simple `new_entries_permitted(date) -> bool` interface. |
-| `src/regime/earnings.py` | **Earnings Blackout Filter** | Maintains a quarterly blackout schedule: no new entries in a pair during the 2 trading days before through 1 trading day after either stock's earnings date. For this project scope, uses end-of-quarter approximation (last 5 trading days of March, June, September, December) rather than per-company calendars. Documented as a known simplification. |
-
----
-
-### `src/backtest/` — Backtesting Engine
-
-> **Label: Backtest Engine**
-> Simulates the full trading strategy over historical data. Written as a custom loop-based engine rather than a third-party library for full control and debuggability.
-
-| File | Label | Description |
-|---|---|---|
-| `src/backtest/engine.py` | **Main Backtest Loop** | The central simulation loop. Iterates day by day over the backtest period. On each day: reconstitutes universe (monthly), re-clusters (quarterly), rescores and retiers (monthly), applies regime filters, generates entry/exit signals for all pairs, routes decisions to the portfolio manager, and logs all decisions including signals that were blocked by filters. Entry point for `scripts/03_run_backtest.py`. |
-| `src/backtest/portfolio.py` | **Portfolio and Position Manager** | Tracks all open positions, per-pair P&L, and portfolio-level NAV. Implements dollar-neutral sizing, equal capital allocation among active pairs, β-triggered rebalancing, and the drawdown control rules (>5% → 50% size reduction, >10% → halt + gradual reduction). Enforces the no-shared-stocks constraint. |
-| `src/backtest/costs.py` | **Transaction Cost Model** | Applies the full cost model to every trade: commission ($0.005/share), slippage (5 bps for ADV >5M, 10 bps for 1-5M), bid-ask spread (2 bps above $30, 5 bps for $10-30), and flat 2% annualized short borrow cost. Skips trades where expected profit < 2× round-trip cost and logs the skipped trade. |
-| `src/backtest/execution.py` | **Simulated Order Execution** | Models market-on-close order submission. Implements the short-leg-first order sequencing. Handles partial fill policy: if the short leg fills < 95%, cancels the long leg and queues a retry for the next day. Returns fill prices and quantities for use by the portfolio manager. |
-
----
-
-### `src/metrics/` — Performance Measurement
-
-> **Label: Metrics and Reporting Module**
-> Computes all performance statistics and generates the visualizations and tables for the final report.
-
-| File | Label | Description |
-|---|---|---|
-| `src/metrics/performance.py` | **Performance Calculator** | Computes all key metrics from the portfolio NAV time series and trade log: annualized return (net of costs), Sharpe ratio, Sortino ratio, maximum drawdown, win rate, average trade duration vs. half-life, percentage of exits by type (take profit / stop loss / time stop / cointegration break), and average number of active pairs per month. |
-| `src/metrics/reporting.py` | **Report Generator** | Produces all charts and tables for the final report: NAV curve vs. XLK benchmark, monthly returns heatmap, drawdown chart, pairs activity timeline, composite score distributions, exit type breakdown, and walk-forward results table. Saves all outputs to `outputs/report/`. |
-
----
-
-## `/scripts` — Executable Pipeline Scripts
-
-> **Label: Orchestration Layer**
-> Numbered scripts that define the exact sequence of operations to run the full pipeline. Each script is a thin wrapper that imports from `src/` and calls functions in the right order. A new teammate can understand the full system by reading these five files in order.
-
-| File | Label | Description |
-|---|---|---|
-| `scripts/01_fetch_data.py` | **Data Fetch Script** | Runs once at project start (and quarterly for refreshes). Calls `src/data/fetch.py` to download all price, fundamental, and regime data. Prints a summary of what was fetched and any failed tickers. Expected runtime: 2-5 minutes. |
-| `scripts/02_build_universe.py` | **Universe Build Script** | Runs the data cleaning pipeline and applies universe filters to construct `data/processed/universe_history.parquet`. Should be re-run after any changes to filter thresholds in `config.py`. |
-| `scripts/03_run_backtest.py` | **Main Backtest Script** | Runs the full backtest loop over the training period (first 2.0 years). Accepts a `--config` argument to swap parameter sets for sensitivity analysis. Writes trade log and NAV series to `outputs/backtest_results/`. Expected runtime: 5-15 minutes. |
-| `scripts/04_walkforward.py` | **Walk-Forward Validation Script** | Divides the training period into quarterly windows. Re-selects pairs on each rolling training set and evaluates on the following quarter. Writes per-quarter metrics to `outputs/backtest_results/walkforward_results.csv`. |
-| `scripts/05_generate_report.py` | **Report Generation Script** | Reads backtest results and generates all charts and tables. Writes outputs to `outputs/report/`. Run this after `03_run_backtest.py` and `04_walkforward.py` complete. |
-
----
-
-## `/tests` — Test Suite
-
-> **Label: Test Layer**
-> Unit tests for every major module. Written with `pytest`. Run before merging any PR. Tests use small synthetic datasets in `tests/fixtures/` rather than real market data, so they run in under 30 seconds and don't require internet access.
-
-| File | Label | Description |
-|---|---|---|
-| `tests/test_clustering.py` | **Clustering Tests** | Verifies: distance matrix is symmetric and has zeros on diagonal, values stay in `[0, 2]`, silhouette-scored K-means returns a valid clustering, and every input ticker appears in exactly one cluster. |
-| `tests/test_scoring.py` | **Composite Score Tests** | Verifies: each component scorer returns values in [0, 1], pairs failing pre-filter gates are discarded, weights sum to 1.0, normalization is per-cluster not global, correct number of finalists returned per cluster. |
-| `tests/test_signals.py` | **Signal Generation Tests** | Verifies: hedge ratio β is positive for valid pairs, spread percentile is within [0, 100], entry signals are only generated outside the 2nd-98th percentile band, all three parameters (β, μ, σ) use the same window. |
-| `tests/test_backtest.py` | **Backtest Engine Tests** | Verifies: portfolio is dollar-neutral after each trade, no position contains a shared stock, drawdown controls trigger at the correct thresholds, transaction costs are deducted on every trade, time stop closes positions exactly at 20 days. |
-| `tests/fixtures/` | **Synthetic Test Data** | Small hand-crafted datasets used by all tests. Includes a 10-stock price matrix with known correlation structure, a pre-computed spread with known half-life, and a fabricated portfolio NAV series with a known Sharpe ratio. Never use real market data in tests. |
-
----
-
-## `/outputs` — Results and Reports
-
-> **Label: Output Layer** *(gitignored)*
-> All generated results. This entire directory is gitignored — nothing here is committed. Regenerate by running the scripts.
-
-| Directory | Label | Description |
-|---|---|---|
-| `outputs/backtest_results/` | **Backtest Outputs** | Trade log CSV, daily NAV series, per-pair P&L summary, and walk-forward results table. Written by `scripts/03_run_backtest.py` and `scripts/04_walkforward.py`. |
-| `outputs/report/` | **Report Outputs** | All charts (PNG) and tables (CSV) for the final writeup. Written by `scripts/05_generate_report.py`. |
-| `outputs/data_quality_report.txt` | **Data Quality Log** | Written by `src/data/clean.py`. Records every missing day, forward-fill applied, and ticker dropped during cleaning. Review this after every data fetch. |
-
----
-
-## Summary: File Count by Layer
-
-| Layer | Files | Purpose |
-|---|---|---|
-| Documentation | 6 | Strategy, architecture, decisions, open questions |
-| Data | 8 | Raw and processed data cache |
-| Source — Data | 3 | Fetch, clean, load |
-| Source — Pipeline | 13 | Universe → Clustering → Scoring → Signals → Regime → Backtest → Metrics |
-| Scripts | 5 | Numbered orchestration of the full pipeline |
-| Tests | 5 + fixtures | Unit coverage of all major modules |
-| Config + Root | 5 | Setup, environment, gitignore |
-| **Total** | **~48** | |
+File-by-file descriptions: [`docs/project-structure.md`](project-structure.md).

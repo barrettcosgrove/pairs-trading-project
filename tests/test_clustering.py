@@ -1,9 +1,9 @@
 # tests/test_clustering.py
 
-import pandas as pd
-import numpy as np
 from datetime import date
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from src.clustering.correlation import build_distance_matrix

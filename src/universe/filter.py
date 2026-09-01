@@ -13,7 +13,6 @@ Called by scripts/02_build_universe.py. Never run directly.
 
 import logging
 import sys
-import os
 from datetime import date
 from pathlib import Path
 

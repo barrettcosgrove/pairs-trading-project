@@ -29,6 +29,7 @@ def test_singleton_cluster_skipped():
 
 import pytest
 
+
 def test_duplicate_ticker_across_clusters_raises():
     clusters = {
         0: ["AAPL", "MSFT"],

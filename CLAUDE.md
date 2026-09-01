@@ -8,18 +8,18 @@ codebase each time. Keep this file updated as the project evolves.
 
 ## Project Overview
 
-Systematic market-neutral pairs trading strategy on US technology stocks.
-The pipeline identifies cointegrated stock pairs using K-means clustering on
-a correlation distance matrix, scores candidates with a five-component
-composite score, filters finalists by a minimum score threshold, and generates
-mean-reversion entry/exit signals using empirical spread percentiles.
+Systematic market-neutral pairs trading on a multi-sector S&P-style universe
+(~95 names in `CANDIDATE_TICKERS`). K-means on a correlation distance matrix,
+five-component composite score, then mean-reversion signals from a **locked
+formation z-score** (not empirical percentiles).
 
-**Full strategy specification:** `docs/strategy.md`
-**System design and data flow:** `docs/architecture.md`
-**Data sources and schemas:** `docs/data.md`
-**Build roadmap and ownership:** `docs/implementation-plan.md`
-**Design decisions log:** `docs/decisions.md`
-**Unresolved questions:** `docs/open-questions.md`
+**Live knobs:** `src/config.py`
+**Implemented design:** `docs/architecture.md`
+**Original v2.0 spec (not all live):** `docs/strategy.md`
+**Issues / backtest results:** `docs/diagnostics.md`
+**Canonical tree:** `docs/file-structure.md`
+**Data sources:** `docs/data.md`
+**Decisions / open questions:** `docs/decisions.md`, `docs/open-questions.md`
 
 ---
 
@@ -31,10 +31,10 @@ mean-reversion entry/exit signals using empirical spread percentiles.
 | pandas | 2.2+ | DataFrames, time series |
 | numpy | 1.26+ | Numerical computation |
 | scikit-learn | 1.4+ | K-means, silhouette scoring |
-| statsmodels | 0.14+ | Johansen, KPSS, OLS regression |
+| statsmodels | 0.14+ | Johansen, OLS regression |
 | yfinance | 0.2.40+ | Price and fundamental data |
 | pyarrow | 15+ | Parquet I/O |
-| matplotlib + seaborn | latest | Visualization |
+| matplotlib + seaborn | latest | Visualization (unused until script 05) |
 | pytest | 8+ | Unit testing |
 | ruff | 0.4+ | Linting and import sorting |
 | uv | latest | Dependency and environment management |
@@ -45,32 +45,34 @@ mean-reversion entry/exit signals using empirical spread percentiles.
 
 ```
 arq-pairs-trading/
-├── CLAUDE.md                    ← This file
-├── README.md                    ← Quick start for humans
-├── pyproject.toml               ← Dependencies (managed by uv)
-├── .gitignore
-├── .env.example
+├── CLAUDE.md / AGENTS.md
+├── README.md
+├── pyproject.toml
 │
-├── docs/                        ← Strategy and architecture docs
+├── docs/                 ← architecture (live), strategy (spec), diagnostics
 ├── data/
-│   ├── sector_map.py            ← COMMITTED: ticker → subsector mapping
-│   ├── raw/                     ← GITIGNORED: fetched from yfinance
-│   └── processed/               ← GITIGNORED: derived by pipeline
+│   ├── sector_map.py     ← COMMITTED ticker → sector
+│   ├── raw/              ← GITIGNORED
+│   └── processed/        ← GITIGNORED
 │
 ├── src/
-│   ├── config.py                ← ALL parameters live here, nowhere else
-│   ├── data/                    ← fetch.py, clean.py, load.py
-│   ├── universe/                ← filter.py
-│   ├── clustering/              ← correlation.py, kmeans.py
-│   ├── scoring/                 ← candidate_pairs.py + 5 component files + composite.py
-│   ├── signals/                 ← hedge_ratio.py, spread.py, entry_exit.py
-│   ├── regime/                  ← vix.py, earnings.py
-│   ├── backtest/                ← engine.py, portfolio.py, costs.py, execution.py
-│   └── metrics/                 ← performance.py, reporting.py
+│   ├── config.py
+│   ├── data/             ← fetch.py, clean.py, load.py
+│   ├── universe/         ← filter.py
+│   ├── clustering/       ← correlation.py, kmeans.py
+│   ├── scoring/          ← 5 components + composite.py
+│   ├── signals/          ← hedge_ratio.py, spread.py, entry_exit.py
+│   ├── regime/           ← vix.py, earnings.py
+│   ├── backtest/         ← engine.py, portfolio.py, costs.py, execution.py
+│   ├── metrics/          ← STUBS
+│   ├── tiering/          ← leftover; engine does not call it
+│   └── scrap/            ← prototypes; not the pipeline
 │
-├── scripts/                     ← Run in order: 01 → 02 → 03 → 04 → 05
-├── tests/                       ← pytest, uses fixtures/ not real data
-└── outputs/                     ← GITIGNORED: all generated results
+├── scripts/              ← 01 → 02 → 03 → 04 (05 is a stub)
+├── tests/
+├── outputs/              ← GITIGNORED
+├── working_model/        ← old prototype
+└── scratch/              ← ad-hoc analysis
 ```
 
 ---
@@ -118,6 +120,8 @@ df = pd.read_parquet("data/processed/returns.parquet")
 from src.data.load import load_returns
 df = load_returns(start=start_date, end=end_date)
 ```
+
+`start` / `end` may be `None` to drop that bound (warmup load).
 
 ### 3. Never call yfinance outside fetch.py
 All yfinance calls are isolated to `src/data/fetch.py`. Other modules never
@@ -173,15 +177,15 @@ signatures without updating this file and notifying the affected owner.
 
 ```python
 # src/data/load.py — Barrett's outputs, consumed by everyone
-load_returns(start: date, end: date) -> pd.DataFrame
+load_returns(start: date | None, end: date | None) -> pd.DataFrame
     # columns: [date, ticker, log_return]
-    # indexed by date, sorted ascending
-    # no NaN values
+    # RangeIndex, sorted by date ascending, no NaN
+    # None start/end = unbounded on that side
 
-load_prices(start: date, end: date) -> pd.DataFrame
+load_prices(start: date | None, end: date | None) -> pd.DataFrame
     # columns: [date, ticker, adj_close, volume]
 
-load_vix(start: date, end: date) -> pd.Series
+load_vix(start: date | None, end: date | None) -> pd.Series
     # index: date, values: VIX close
 
 load_universe(as_of: date) -> list[str]
@@ -213,21 +217,40 @@ score_candidates(
     prices: pd.DataFrame,
     as_of: date,
 ) -> pd.DataFrame
-    # columns: [ticker_a, ticker_b, cluster_id, composite_score]
-    # exactly 1 pair per cluster, only pairs scoring >= CONFIG.min_composite_score
+    # columns: [ticker_a, ticker_b, cluster_id, composite_score,
+    #           beta_formation, mean_formation, std_formation, halflife_value]
+    # CONFIG.finalists_per_cluster pairs per cluster, only pairs scoring >= CONFIG.min_composite_score
+    # after half-life hard gate, min_cointegration_score, and β_F > min_formation_beta
     # raw absolute scores — no normalization
     # ticker_a is canonical stock A based on halflife direction
+    # empty result must keep these columns; engine must not clear active_pairs
 
 # src/signals/entry_exit.py — Anvay's output, consumed by backtest engine
 get_signal(
     ticker_a: str,
     ticker_b: str,
     prices: pd.DataFrame,
-    as_of: date
+    as_of: date,
+    beta_formation: float,
+    mean_formation: float,
+    std_formation: float,
+    expected_halflife: float,
+    days_open: int,
+    current_position: str | None = None,
+    config: StrategyConfig | None = None,
 ) -> str
     # returns one of:
     # "LONG_SPREAD", "SHORT_SPREAD", "TAKE_PROFIT",
     # "STOP_LOSS", "TIME_STOP", "HOLD"
+    # z uses locked formation β/μ/σ only
+
+# src/backtest/engine.py
+run_backtest(config: StrategyConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]
+    # (trade_log, nav_series, pair_daily_mtm, blocked_entries)
+    # blocked_entries: [date, ticker_a, ticker_b, signal, reason] — one row per
+    # suppressed actionable entry (drawdown_halt, vix, earnings_blackout,
+    # not_active, cooldown, capacity, beta, cost_gate, momentum, no_cross)
+    # trade_log exit actions include DOLLAR_STOP when max_pair_loss_pct is set
 ```
 
 ---
@@ -237,14 +260,11 @@ get_signal(
 ```
 scripts/01_fetch_data.py      ← Run once at project start
 scripts/02_build_universe.py  ← Run after 01, or after config changes
-scripts/03_run_backtest.py    ← Main entry point
-scripts/04_walkforward.py     ← Run after 03
-scripts/05_generate_report.py ← Run after 03 and 04
+scripts/03_run_backtest.py    ← Full-calendar simulation
+scripts/04_walkforward.py     ← Slices last oos_fraction of 03 CSVs (no re-fit)
+scripts/05_generate_report.py ← Stub — do not expect charts
 ```
 
-Each script depends on the outputs of the previous one. Do not skip steps.
-
-To run:
 ```bash
 uv run python scripts/01_fetch_data.py --disable-proxy
 uv run python scripts/02_build_universe.py
@@ -257,94 +277,131 @@ uv run python scripts/03_run_backtest.py
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `clustering_window` | 120 days | Correlation matrix window — decoupled from signal window |
-| `signal_window` | 60 days | Window for β, μ, σ, empirical percentiles — must be same for all three |
-| `entry_percentile_low` | 2.0 | Long entry threshold |
-| `entry_percentile_high` | 98.0 | Short entry threshold |
-| `exit_percentile_low` | 40.0 | Take-profit lower bound |
-| `exit_percentile_high` | 60.0 | Take-profit upper bound |
-| `stop_percentile_low` | 0.5 | Stop-loss lower bound |
-| `stop_percentile_high` | 99.5 | Stop-loss upper bound |
-| `johansen_threshold` | 0.10 | p-value threshold (BH-corrected) |
-| `halflife_min` | 5 | Minimum acceptable half-life in days |
-| `halflife_max` | 20 | Maximum acceptable half-life in days — matches time stop |
-| `vix_entry_block` | 28 | VIX level that blocks all new entries |
-| `vix_resume` | 25 | VIX level to resume (must hold 5 days) |
-| `weight_correlation_stability` | 0.20 | Composite score component weight |
-| `weight_cointegration` | 0.30 | Composite score component weight |
-| `weight_halflife` | 0.25 | Composite score component weight — binary gate |
-| `weight_volatility` | 0.15 | Composite score component weight |
-| `weight_fundamentals` | 0.10 | Sector compatibility component weight |
-| `min_composite_score` | 0.70 | Minimum absolute composite score to advance to trading |
-| `finalists_per_cluster` | 1 | Exactly 1 pair selected per cluster |
-| `same_sector_score` | 1.0 | Score when both tickers are in the same sector |
-| `cross_sector_score` | 0.4 | Score when tickers are in different sectors |
-| `unknown_sector_score` | 0.5 | Score when sector label is missing for either ticker |
-| `beta_rebalance_threshold` | 0.15 | Rebalance short leg when β drifts beyond this |
-| `short_borrow_annual` | 0.02 | Flat borrow cost assumption |
-| `random_seed` | 42 | Fixed K-means seed for reproducibility |
-| `min_dollar_volume` | 25,000,000 | 30-day avg daily dollar volume proxy for market cap — replaces min_market_cap |
-| `data_quality_window` | 90 | Trailing window (days) used to count missing adj_close values in clean.py |
-| `max_missing_days` | 5 | Maximum missing days allowed in any trailing `data_quality_window` before a ticker is dropped |
+| `clustering_window` | 120 days | Correlation matrix for K-means |
+| `formation_window` | 120 days | Locked β / μ / σ for z-score |
+| `signal_window` | 60 days | Live hedge β for share resize only — not for z |
+| `johansen_window` | 252 days | Johansen lookback |
+| `k_min` / `k_max` | 4 / 6 | Silhouette-scored k |
+| `entry_zscore` | 1.25 | Absolute formation z to enter (Round 3 sweep; was 1.5) |
+| `entry_requires_cross` | True | Enter only the day z first crosses the band |
+| `take_profit_zscore` | 1.0 | Absolute z to take profit (Round 3 sweep; was 0.5) |
+| `stop_loss_zscore` | 3.5 | Absolute z to stop |
+| `time_stop_days` | 50 | Force close (must be ≥ 1.5× `halflife_max`) |
+| `max_pair_loss_pct` | None | Optional per-pair dollar loss cap; exit action DOLLAR_STOP |
+| `momentum_window` / `momentum_threshold` | 14 / 0.15 | Block entries if either leg moved this much |
+| `pair_stop_cooldown_days` | 20 | Trading days after STOP_LOSS |
+| `johansen_threshold` | 0.10 | Mapping aid; not a BH kill switch |
+| `min_cointegration_score` | 0.70 | Soft floor on `1 − p_adj` (Round 3; was 0.40) |
+| `min_formation_beta` | 0.0 | Drop non-positive formation β |
+| `halflife_min` / `halflife_max` | 5 / 20 | Hard gate |
+| `vix_entry_block` / `vix_resume` | 28 / 25 | Resume must hold 5 days |
+| `weight_correlation_stability` | 0.20 | |
+| `weight_cointegration` | 0.25 | |
+| `weight_halflife` | 0.30 | Binary gate + score |
+| `weight_volatility` | 0.15 | |
+| `weight_fundamentals` | 0.10 | Sector labels, not P/S |
+| `min_composite_score` | 0.55 | Absolute floor after raw weighted sum |
+| `finalists_per_cluster` | 2 | Pairs per cluster; also caps concurrent positions |
+| `same_sector_score` / `cross_sector_score` / `unknown_sector_score` | 1.0 / 0.4 / 0.5 | |
+| `rebalance_beta_intra_trade` | False | Intra-trade B-leg resize disabled (Round 3) |
+| `beta_rebalance_threshold` | 0.15 | Only if rebalance enabled; never overwrite `beta_at_entry` |
+| `max_weight_per_pair` | 0.25 | Per-leg allocation cap as fraction of NAV |
+| `target_concurrent_pairs` | 10 | Sizing divisor cap (10 ≈ equal split across active pairs) |
+| `min_dollar_volume` | 25,000,000 | 30-day ADV$ proxy |
+| `backtest_start_date` / `backtest_end_date` | 2022-01-01 / 2024-12-31 | Simulation window only |
+| `oos_fraction` | 0.30 | Script 04 slice |
+| `initial_capital` | 100000 | |
+| `random_seed` | 42 | K-means |
+| `data_quality_window` / `max_missing_days` | 90 / 5 | `clean.py` |
 
 ---
 
 ## Testing
 
 ```bash
-# Run full suite (must pass before any PR)
 uv run pytest
-
-# Run a specific module
 uv run pytest tests/test_scoring.py
-
-# With coverage
 uv run pytest --cov=src --cov-report=term-missing
 ```
 
-Tests use synthetic data from `tests/fixtures/`. They never call yfinance
-or read from `data/`. All tests should complete in under 30 seconds.
+Tests use synthetic data. They never call yfinance or read from `data/`.
+All tests should complete in under 30 seconds.
 
 ---
 
 ## Common Mistakes to Avoid
 
 **Stale processed data** — If you change filter thresholds in `config.py`,
-delete `data/processed/` and re-run `scripts/02_build_universe.py`. Old
-processed files will silently produce wrong results.
+delete `data/processed/` and re-run `scripts/02_build_universe.py`.
 
-**Window inconsistency** — β, μ, and σ must all use `CONFIG.signal_window`.
-If any one of them uses a different window, entry thresholds are
-miscalibrated. This is a silent bug that produces plausible-looking but
-wrong signals.
+**Formation vs live β** — z-score uses locked `beta_formation` / `mean_formation`
+/ `std_formation`. Live `signal_window` β updates `Position.beta_hedge` for
+share resize only. Never assign the new β onto `beta_at_entry`.
 
-**Cross-cluster pairs** — Only within-cluster pairs are evaluated. Never
-pass cross-cluster pairs to the scoring module.
+**Warmup load** — The engine must load prices/returns/VIX with `start=None`
+(or the fetch start). Restrict the **loop** to `[backtest_start_date,
+backtest_end_date]`. Loading only the backtest window starves Johansen and
+delays the first cluster.
 
-**Raw prices vs. log prices** — Cointegration tests, hedge ratio estimation,
-and spread calculation all use log prices. Raw prices are only used for
-volume and ADV filters. Do not mix them.
+**Empty score does not flatten** — If `score_candidates` returns no rows,
+keep the previous `active_pairs`. Do not clear the book.
+
+**Do not treat Johansen as a BH p < 0.10 kill switch** — Score is `1 − p_adj`
+with `min_cointegration_score`. Half-life remains the hard statistical gate.
+
+**Cross-cluster pairs** — Only within-cluster pairs are evaluated.
+
+**Raw prices vs log prices** — Cointegration, hedge ratio, and spread use
+log prices. Raw prices are for volume and ADV filters.
 
 **Look-ahead in rolling windows** — Use `.shift(1)` where needed. A rolling
-window ending on day T must not include day T's data when generating day T's
-signal.
+window ending on day T must not include day T's close when that close is
+not yet known for the signal.
 
-**yfinance bot detection** — Always use `impersonate="chrome"` when
-creating a curl_cffi Session in fetch.py. Without it, Yahoo detects
-the request as automated and returns 429. This is set in
-`_configure_yfinance_runtime()`.
+**yfinance bot detection** — `impersonate="chrome"` in
+`_configure_yfinance_runtime()` in `fetch.py`.
 
-**Regime data may be synthetic during development** — Replace with real fetched
-data before the final backtest. Check `data/raw/regime.parquet` row count:
-synthetic data will have exactly the number of business days in the date range;
-real data may have slightly fewer due to market holidays. If the row count
-matches the business-day count exactly, you are still on synthetic data.
+**Regime data may be synthetic** — If `regime.parquet` row count equals the
+business-day count exactly, you may still be on synthetic VIX/SPY.
 
-**No normalization in composite** — `composite.py` computes raw absolute weighted scores. Do not apply min-max normalization within clusters. The minimum threshold `CONFIG.min_composite_score` filters out weak pairs after raw scoring.
+**No normalization in composite** — Raw weighted scores, then
+`min_composite_score`.
 
-**Fundamentals scorer takes no time arguments** — `fundamentals.score_candidate_pairs(candidate_pairs)` takes only the pairs DataFrame. It reads sector labels from its internal `SECTOR_MAP`. Do not pass `returns`, `prices`, or `as_of` to it.
+**Fundamentals scorer takes no time arguments** —
+`fundamentals.score_candidate_pairs(candidate_pairs)` only. Sector map,
+not P/S.
 
-**Tiering and Bollinger removed** — `src/tiering/` and `src/regime/bollinger.py` have been removed from the pipeline. Do not reference them in new code. Anvay's scope is signals, VIX filter, earnings blackout, and backtest engine only.
+**Tiering and Bollinger are not on the live path** — `src/tiering/` is
+leftover. There is no `bollinger.py`. Do not import either in new code.
+
+**Script 04 is a slice** — It does not re-cluster quarterly. Script 05 is
+a stub.
+
+**Percentile thresholds are gone** — Signals are z-score. Do not
+reintroduce `entry_percentile_*` in new code unless config and tests
+change together.
+
+**Drawdown halt is a cooldown, not a permanent stop** — After the trim
+completes, `Portfolio.check_drawdown_controls` resets `peak_nav` to current
+NAV and releases the halt after `drawdown_recovery_days` non-losing days.
+Do not reintroduce the old "recover to within 5% of the all-time peak"
+release rule — with entries blocked it can never be satisfied (deadlocked
+the book for 21 months in Run 2).
+
+**Trim is per-day multiplicative** — `_execute_trim` applies
+`drawdown_trim_factor ** (1/drawdown_trim_days)` per day so the position
+reaches the target after the trim window. Applying the full factor daily
+compounds to near-liquidation.
+
+**Sizing levers are data-tested** — Concentrating capital
+(`target_concurrent_pairs` 4) and per-pair dollar caps (`max_pair_loss_pct`
+0.02–0.05) both LOWERED NAV and win rate in the Round 3 test matrix.
+Re-test before changing either; see `docs/diagnostics.md`.
+
+**Scoring reads the module-global CONFIG** — `composite.py` uses
+`CONFIG.min_cointegration_score` / `finalists_per_cluster` from its own
+import, not the config passed to `run_backtest`. Sensitivity scripts that
+vary scoring parameters must patch `src.scoring.composite.CONFIG`.
 
 ---
 
@@ -356,9 +413,9 @@ If the team falls behind, cut in this order. Document every cut in
 | If behind by | Cut | Never cut |
 |---|---|---|
 | 1 day | Earnings blackout filter | Transaction costs |
-| 2 days | Walk-forward validation | OOS held-out period |
-| 3 days | Fundamental/sector component (set weight to 0) | Johansen cointegration gate |
-| 4+ days | Min composite threshold (accept all passing pairs) | Dollar-neutral sizing |
+| 2 days | Walk-forward / OOS slice polish | Held-out OOS period |
+| 3 days | Sector component (set weight to 0) | Formation-locked z / dollar-neutral sizing |
+| 4+ days | Min composite threshold | Half-life hard gate |
 
 ---
 
@@ -367,20 +424,18 @@ If the team falls behind, cut in this order. Document every cut in
 Branch naming: `feat/`, `fix/`, `refactor/`, `docs/`, `test/`, `data/`
 
 ```bash
-# Example
 git checkout -b feat/composite-scorer
 ```
 
 Commit format: `type(scope): short summary`
 
 ```bash
-# Examples
 git commit -m "feat(scoring): add half-life scorer with AR(1) regression"
 git commit -m "fix(data): forward-fill missing days up to 1 day only"
 git commit -m "config: raise johansen threshold from 0.05 to 0.10"
 ```
 
-Full conventions: `docs/git_conventions.md`
+Full conventions: `docs/git-conventions.md`
 
 ---
 

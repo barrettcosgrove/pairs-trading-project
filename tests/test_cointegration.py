@@ -16,7 +16,6 @@ import src.scoring.cointegration as cointegration
 from src.config import CONFIG
 from src.scoring.cointegration import score, score_candidate_pairs
 
-
 N_OBSERVATIONS = CONFIG.signal_window * 5
 INSUFFICIENT_OBSERVATIONS = 20
 CONSTANT_VOLUME = 1_000_000

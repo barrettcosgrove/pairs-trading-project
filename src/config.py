@@ -93,8 +93,19 @@ class StrategyConfig:
     # Scores are weighted sums of the [0, 1] mapped component scores.
     min_composite_score: float = 0.55
 
-    # Maximum fraction of the portfolio NAV that can be allocated to a single pair leg
-    max_weight_per_pair: float = 1.0
+    # Maximum fraction of the portfolio NAV that can be allocated to a single pair leg.
+    # Caps concentration when few pairs are active (1.0 previously allowed one pair
+    # to take ~90% of NAV — see diagnostics I4, WEC/XEL $85k on $100k NAV).
+    max_weight_per_pair: float = 0.25
+
+    # Sizing divisor cap: investable capital is split across
+    # min(active pairs, this) expected concurrent positions.
+    # Tested at 4 in Round 3 (the book held 1–2 open pairs on 73% of in-market
+    # days): concentrating capital scaled the loss tail faster than the wins
+    # (full NAV $94.7k vs $97.1k) and pushed drawdowns past the halt. 10
+    # reproduces the equal-split-across-active-pairs sizing, which won the
+    # test matrix. max_weight_per_pair remains the hard per-pair cap.
+    target_concurrent_pairs: int = 10
 
     # --- Correlation Stability ---
     # Minimum recent 60-day correlation — pairs below this are discarded
@@ -105,8 +116,24 @@ class StrategyConfig:
     correlation_stability_historical_window: int = 252
 
     # --- Cointegration (Johansen) ---
-    # p-value threshold after Benjamini-Hochberg FDR correction
+    # p-value threshold used to map scores; not a hard pair-elimination gate
     johansen_threshold: float = 0.10
+
+    # Lookback (trading days) for the Johansen test. Longer than formation_window
+    # so the test has power once warmup history is loaded.
+    johansen_window: int = 252
+
+    # Soft floor on the continuous cointegration score (1 - BH-adjusted p).
+    # 0.70 ≈ adjusted p below 0.30. Raised from 0.40 in Round 3: the loss tail
+    # came from pairs that broke down (stop-outs), and the floor curve was
+    # monotone-better from 0.5 → 0.7 (NAV $94.6k → $99.3k, win 74% → 81%,
+    # stops 14 → 8) before pair supply dried up at 0.85. Selected on
+    # full-period results — see docs/diagnostics.md Round 3 caveats.
+    min_cointegration_score: float = 0.70
+
+    # Formation OLS hedge ratio must be strictly positive. Negative β implies
+    # both legs would be traded in the same direction (not a spread hedge).
+    min_formation_beta: float = 0.0
 
     # --- Spread Half-Life ---
     # Acceptable half-life range in trading days
@@ -134,8 +161,10 @@ class StrategyConfig:
     cross_sector_score: float = 0.4
     unknown_sector_score: float = 0.5
 
-    # Number of pairs selected per cluster
-    finalists_per_cluster: int = 1
+    # Number of pairs selected per cluster. 2 doubles portfolio capacity
+    # (engine caps concurrent positions at len(active_pairs)); the
+    # no-shared-tickers constraint still applies at entry.
+    finalists_per_cluster: int = 2
 
     # -------------------------------------------------------------------------
     # Signal Generation
@@ -156,16 +185,34 @@ class StrategyConfig:
     # Hedge ratio rebalance trigger — rebalance short leg when beta drifts beyond
     beta_rebalance_threshold: float = 0.15
 
+    # Resize leg B while a position is open when the live 60-day β drifts.
+    # Disabled: the absolute 0.15 deadband on a noisy rolling β caused frequent
+    # resizes that realized cash buy-high/sell-low and could flip the short
+    # leg's sign (diagnostics I5, UNH/ABBV). The formation hedge is held to exit.
+    rebalance_beta_intra_trade: bool = False
+
     # -------------------------------------------------------------------------
     # Entry and Exit Signals (Z-Score thresholds)
     # -------------------------------------------------------------------------
 
     # Entry: absolute Z-score of the spread must exceed this to enter a trade.
     # > +entry_zscore -> Short Spread. < -entry_zscore -> Long Spread.
-    entry_zscore: float = 1.5
+    # 1.25 (was 1.5) selected by the Round 3 in-sample sweep: tighter entries
+    # catch small dislocations that actually revert; wider entries (1.75-2.25)
+    # caught genuinely diverging spreads and halved the win rate.
+    entry_zscore: float = 1.25
 
-    # Take profit: close position when absolute Z-score reverts back towards the mean
-    take_profit_zscore: float = 0.5
+    # Require a fresh threshold cross to enter: yesterday's z inside the entry
+    # band, today's beyond it. Prevents entering mid-divergence on the score
+    # date, where any pair already past the threshold fired immediately
+    # (diagnostics RC4 — SCHW/BAC stopped out in 8 days, twice).
+    entry_requires_cross: bool = True
+
+    # Take profit: close position when absolute Z-score reverts back towards
+    # the mean. 1.0 (was 0.5) selected by the Round 3 in-sample sweep: taking
+    # the first ~0.25σ of reversion wins far more often than holding for a
+    # full retrace (IS win rate 80% vs 46% at the old 1.5/0.5 shape).
+    take_profit_zscore: float = 1.0
 
     # Stop loss: close immediately if absolute Z-score stretches beyond this limit
     stop_loss_zscore: float = 3.5
@@ -176,6 +223,14 @@ class StrategyConfig:
 
     # Time stop: maximum days to hold a position before force closing.
     time_stop_days: int = 50
+
+    # Per-pair dollar loss cap: force-close a position when its unrealized
+    # P&L falls below -(this fraction) × dollar allocation. Disabled: the
+    # Round 3 test matrix (caps 2%/3%/5% vs none) showed every cap LOWERED
+    # both win rate and NAV — dips of 2-5% usually revert, so the cap
+    # converts temporary drawdowns into realized losses. Kept as an optional
+    # risk control for live trading.
+    max_pair_loss_pct: float | None = None
 
     # Cooldown after a STOP_LOSS before the same pair may re-enter.
     # Uses trading-day steps in the engine loop.
@@ -242,10 +297,16 @@ class StrategyConfig:
     # Days over which to execute the trim (to avoid market impact)
     drawdown_trim_days: int = 5
 
-    # Recovery condition: portfolio must reach within this pct of triggering peak
+    # Legacy recovery condition (within this pct of the triggering peak).
+    # No longer used for halt release: the old rule was unreachable — with all
+    # positions trimmed and entries blocked, NAV could never climb back toward
+    # the all-time peak, deadlocking the strategy (no entries after 2023-03-09).
+    # Kept for reference / potential reuse in reporting.
     drawdown_recovery_threshold: float = 0.05
 
-    # Consecutive positive days required before resuming normal operations
+    # Consecutive non-losing days required after the trim completes before the
+    # halt releases. On release the rolling peak resets to current NAV, so the
+    # halt acts as a ~2-week circuit breaker rather than a permanent stop.
     drawdown_recovery_days: int = 5
 
     # -------------------------------------------------------------------------
@@ -330,9 +391,9 @@ def _validate_config(cfg: StrategyConfig) -> None:
     )
 
 
-    assert cfg.time_stop_days >= cfg.halflife_max * 2, (
-        f"time_stop_days ({cfg.time_stop_days}) must be at least 2x halflife_max "
-        f"({cfg.halflife_max}) to allow pairs enough time to fully revert"
+    assert cfg.time_stop_days >= cfg.halflife_max * 1.5, (
+        f"time_stop_days ({cfg.time_stop_days}) must be at least 1.5x halflife_max "
+        f"({cfg.halflife_max}) to allow pairs enough time to revert"
     )
 
     assert cfg.take_profit_zscore < cfg.entry_zscore < cfg.stop_loss_zscore, (

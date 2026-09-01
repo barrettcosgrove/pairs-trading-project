@@ -38,7 +38,8 @@ def score(
     Runs the Johansen test in both column orderings ([A, B] and [B, A]) and
     averages the resulting p-values to remove ordering sensitivity. The averaged
     p-value is mapped to a score in [0, 1]: lower p-value → higher score.
-    Pairs with averaged p-value >= CONFIG.johansen_threshold score 0.0.
+    The averaged p-value is mapped continuously onto [0, 1]; it is not
+    hard-zeroed at CONFIG.johansen_threshold.
 
     Note: This function scores a single pair without BH FDR correction. For
     batch scoring with per-cluster FDR correction, use score_candidate_pairs().
@@ -51,9 +52,8 @@ def score(
             used, preventing look-ahead bias.
 
     Returns:
-        Float score in [0, 1]. Returns 0.0 when the pair fails the cointegration
-        threshold, lacks sufficient aligned price history, or when the test
-        cannot be computed.
+        Float score in [0, 1]. Returns 0.0 when the pair lacks sufficient
+        aligned price history or the test cannot be computed.
     """
     _validate_price_columns(prices)
 
@@ -80,11 +80,7 @@ def score(
 
     p_value = (p_forward + p_reverse) / 2.0
 
-    if p_value >= CONFIG.johansen_threshold:
-        return 0.0
-
-    score_value = 1.0 - (p_value / CONFIG.johansen_threshold)
-    return float(max(0.0, min(1.0, score_value)))
+    return float(max(0.0, min(1.0, 1.0 - p_value)))
 
 
 def score_candidate_pairs(
@@ -126,10 +122,8 @@ def score_candidate_pairs(
     adj_pvalue_series = scored_pairs.groupby("cluster_id")["_raw_pvalue"].transform(
         lambda x: pd.Series(_apply_bh_correction(x.values), index=x.index)
     )
-    scored_pairs["cointegration_score"] = np.where(
-        adj_pvalue_series < CONFIG.johansen_threshold,
-        np.clip(1.0 - adj_pvalue_series / CONFIG.johansen_threshold, 0.0, 1.0),
-        0.0,
+    scored_pairs["cointegration_score"] = np.clip(
+        1.0 - adj_pvalue_series, 0.0, 1.0
     )
 
     scored_pairs = scored_pairs.drop(columns=["_raw_pvalue"])
@@ -187,7 +181,8 @@ def _interpolate_johansen_pvalue(
 
     Uses piecewise linear interpolation between the 10%, 5%, and 1% critical
     values. Linearly extrapolates below 0.01 for statistics that exceed the 1%
-    critical value, flooring at 0.001.
+    critical value, flooring at 0.001. Statistics below the 10% critical value
+    map continuously from p=1.0 (stat=0) to p=0.10 (stat=cv10).
 
     Args:
         stat: Johansen trace statistic for the null of no cointegration.
@@ -196,11 +191,13 @@ def _interpolate_johansen_pvalue(
         cv1: Critical value at the 1% significance level.
 
     Returns:
-        Approximate p-value in [0.001, 1.0]. Returns 1.0 when the statistic
-        falls below the 10% critical value (fail to reject).
+        Approximate p-value in [0.001, 1.0].
     """
     if stat < cv10:
-        return 1.0
+        if cv10 <= 0:
+            return 1.0
+        frac = max(0.0, min(1.0, stat / cv10))
+        return 1.0 - frac * 0.90
     if stat < cv5:
         frac = (stat - cv10) / (cv5 - cv10)
         return 0.10 - frac * 0.05
@@ -318,7 +315,7 @@ def _extract_log_prices(
         )
         return None
 
-    pair_prices = prices_wide[[ticker_a, ticker_b]].dropna().tail(CONFIG.formation_window)
+    pair_prices = prices_wide[[ticker_a, ticker_b]].dropna().tail(CONFIG.johansen_window)
 
     if len(pair_prices) < _MIN_JOHANSEN_OBS:
         logger.debug(

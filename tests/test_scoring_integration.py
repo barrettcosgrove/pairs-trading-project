@@ -21,7 +21,6 @@ from src.scoring.correlation_stability import (
 from src.scoring.halflife import score_candidate_pairs as score_halflife
 from src.scoring.volatility import score_candidate_pairs as score_volatility
 
-
 TICKERS = ["AAA", "BBB", "CCC", "DDD", "EEE"]
 CONSTANT_VOLUME = 1_000_000
 BASE_RETURN_VOLATILITY = 0.01

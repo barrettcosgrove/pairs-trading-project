@@ -2,11 +2,11 @@
 src/scoring/composite.py — Composite Pair Scoring
 
 Orchestrates the five-component scoring pipeline for candidate pairs within
-each cluster. Calls all five scorer modules, applies binary hard gates on
-half-life and cointegration, applies canonical ticker ordering from the
-half-life direction, computes a raw absolute weighted composite score, filters
-by CONFIG.min_composite_score, and returns exactly CONFIG.finalists_per_cluster
-pairs per cluster.
+each cluster. Calls all five scorer modules, applies a half-life hard gate
+and a soft cointegration-score floor, applies canonical ticker ordering,
+computes a raw absolute weighted composite score, filters by
+CONFIG.min_composite_score, drops non-positive formation β, and returns
+exactly CONFIG.finalists_per_cluster pairs per cluster.
 """
 
 import logging
@@ -16,7 +16,13 @@ import numpy as np
 import pandas as pd
 
 from src.config import CONFIG
-from src.scoring import cointegration, correlation_stability, fundamentals, halflife, volatility
+from src.scoring import (
+    cointegration,
+    correlation_stability,
+    fundamentals,
+    halflife,
+    volatility,
+)
 from src.scoring.candidate_pairs import build_candidate_pairs
 
 logger = logging.getLogger(__name__)
@@ -43,10 +49,12 @@ def score_candidates(
     Score and rank candidate pairs within each cluster using a raw composite score.
 
     Generates all within-cluster candidate pairs, runs all five scorer modules,
-    applies hard gates on half-life and cointegration, applies canonical ticker
-    ordering, computes a raw absolute weighted composite score without
-    normalization, filters by CONFIG.min_composite_score, and returns exactly
-    CONFIG.finalists_per_cluster pairs per surviving cluster.
+    applies the half-life hard gate and a soft cointegration-score floor,
+    applies canonical ticker ordering, computes a raw absolute weighted
+    composite score without normalization, filters by
+    CONFIG.min_composite_score, drops pairs with non-positive formation β,
+    and returns exactly CONFIG.finalists_per_cluster pairs per surviving
+    cluster.
 
     Args:
         clusters: Dictionary mapping cluster id to a list of ticker strings,
@@ -156,20 +164,36 @@ def score_candidates(
         )
         return empty
 
+    # Formation stats on all threshold-passers so a negative-β top pick
+    # does not empty the cluster when a lower-ranked pair is valid.
+    formation_stats = scored.apply(
+        lambda row: _compute_formation_stats(row, prices, as_of), axis=1
+    )
+    scored = pd.concat([scored, formation_stats], axis=1)
+    scored = scored.dropna(subset=["beta_formation", "mean_formation", "std_formation"])
+
+    n_neg_beta = int((scored["beta_formation"] <= CONFIG.min_formation_beta).sum())
+    scored = scored[scored["beta_formation"] > CONFIG.min_formation_beta].copy()
+    if n_neg_beta:
+        logger.info(
+            "Dropped %d pair(s) with formation β <= %.3f as of %s",
+            n_neg_beta,
+            CONFIG.min_formation_beta,
+            as_of,
+        )
+
+    if scored.empty:
+        logger.warning(
+            "No pairs left after formation-β filter as of %s — returning empty result",
+            as_of,
+        )
+        return empty
+
     finalists = (
         scored.sort_values("composite_score", ascending=False)
         .groupby("cluster_id", sort=False)
         .head(CONFIG.finalists_per_cluster)
     )
-
-    # Calculate Formation Statistics for the finalists
-    formation_stats = finalists.apply(
-        lambda row: _compute_formation_stats(row, prices, as_of), axis=1
-    )
-    finalists = pd.concat([finalists, formation_stats], axis=1)
-    
-    # Drop any pairs that failed to compute formation stats
-    finalists = finalists.dropna(subset=["beta_formation", "mean_formation", "std_formation"])
 
     result = (
         finalists[_OUTPUT_COLUMNS]
@@ -189,34 +213,35 @@ def score_candidates(
 
 def _apply_hard_gates(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Drop pairs that fail the binary half-life or cointegration hard gates.
+    Drop pairs that fail the half-life gate or the soft cointegration floor.
 
-    Both gates are evaluated independently before the combined filter is
-    applied. A pair is removed if halflife_score == 0.0 (half-life outside
+    A pair is removed if halflife_score == 0.0 (half-life outside
     [CONFIG.halflife_min, CONFIG.halflife_max] or insufficient history) or
-    cointegration_score == 0.0 (failed Benjamini-Hochberg correction within
-    its cluster). Counts for each gate are logged separately; pairs failing
-    both are counted in each.
+    if cointegration_score is below CONFIG.min_cointegration_score.
 
     Args:
         df: Scored candidate-pair DataFrame containing at least
             halflife_score and cointegration_score columns.
 
     Returns:
-        Filtered copy of df with all hard-gate-failing pairs removed.
+        Filtered copy of df with gate failures removed.
     """
     halflife_failures = int((df["halflife_score"] == 0.0).sum())
-    cointegration_failures = int((df["cointegration_score"] == 0.0).sum())
+    coint_failures = int(
+        (df["cointegration_score"] < CONFIG.min_cointegration_score).sum()
+    )
 
     logger.info(
         "Hard gates: %d pair(s) fail halflife_score == 0.0; "
-        "%d pair(s) fail cointegration_score == 0.0 (counts may overlap)",
+        "%d pair(s) fail cointegration_score < %.2f",
         halflife_failures,
-        cointegration_failures,
+        coint_failures,
+        CONFIG.min_cointegration_score,
     )
 
     passing = df[
-        (df["halflife_score"] != 0.0) & (df["cointegration_score"] != 0.0)
+        (df["halflife_score"] != 0.0)
+        & (df["cointegration_score"] >= CONFIG.min_cointegration_score)
     ].copy()
     return passing
 

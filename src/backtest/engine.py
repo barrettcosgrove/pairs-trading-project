@@ -20,14 +20,15 @@ from src.data.load import load_prices, load_returns, load_universe, load_vix
 from src.regime.earnings import in_blackout
 from src.regime.vix import new_entries_permitted
 from src.scoring.composite import score_candidates
-from src.signals.entry_exit import get_signal
+from src.signals.entry_exit import _is_momentum_breakout, get_signal
+from src.signals.spread import compute as compute_spread
 
 logger = logging.getLogger(__name__)
 
 
 def run_backtest(
     config: StrategyConfig,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Run the ARQ pairs trading simulation over the full backtest date range.
 
@@ -41,7 +42,7 @@ def run_backtest(
                 or pass a modified instance for sensitivity analysis.
 
     Returns:
-        Tuple ``(trade_log, nav_series, pair_daily_mtm)`` where:
+        Tuple ``(trade_log, nav_series, pair_daily_mtm, blocked_entries)`` where:
 
         trade_log columns:
             date, ticker_a, ticker_b, action, shares_a, shares_b,
@@ -50,7 +51,8 @@ def run_backtest(
             (pnl = spread price P&L; on exits realized_net_usd = pnl minus exit
             cost minus entry fee; return_pct = realized_net_usd divided by
             long-leg dollar allocation times 100. Opens: realized_net_usd 0,
-            return_pct NaN.)
+            return_pct NaN. Exit actions: TAKE_PROFIT, STOP_LOSS, TIME_STOP,
+            and DOLLAR_STOP when max_pair_loss_pct is breached.)
 
         nav_series columns:
             date, nav, cash, gross_exposure, drawdown_from_peak
@@ -58,16 +60,35 @@ def run_backtest(
         pair_daily_mtm columns (EOD after trades, borrow; one row per open pair):
             date, ticker_a, ticker_b, direction, cluster_id, mtm_usd,
             gross_exposure_pair, dollar_allocation_at_entry, portfolio_nav_post_trade
+
+        blocked_entries columns (one row per pair-day an actionable entry was
+        suppressed): date, ticker_a, ticker_b, signal, reason — reason is one
+        of drawdown_halt, vix, earnings_blackout, not_active, cooldown,
+        capacity, beta, cost_gate, momentum, no_cross.
     """
     # ── Load full dataset ─────────────────────────────────────────────────────
-    start_date = pd.Timestamp(config.backtest_start_date).date() if getattr(config, 'backtest_start_date', None) else None
-    end_date = pd.Timestamp(config.backtest_end_date).date() if getattr(config, 'backtest_end_date', None) else None
-    all_prices  = load_prices(start=start_date, end=end_date)
-    all_returns = load_returns(start=start_date, end=end_date)
-    vix_series  = load_vix(start=start_date, end=end_date)
+    # Load all available history so clustering / Johansen have warmup. The
+    # simulation loop itself is restricted to [backtest_start_date, backtest_end_date].
+    sim_start = (
+        pd.Timestamp(config.backtest_start_date)
+        if getattr(config, "backtest_start_date", None)
+        else None
+    )
+    sim_end = (
+        pd.Timestamp(config.backtest_end_date)
+        if getattr(config, "backtest_end_date", None)
+        else None
+    )
+    all_prices  = load_prices(start=None, end=sim_end.date() if sim_end is not None else None)
+    all_returns = load_returns(start=None, end=sim_end.date() if sim_end is not None else None)
+    vix_series  = load_vix(start=None, end=sim_end.date() if sim_end is not None else None)
 
     all_dates = sorted(all_prices["date"].unique())
-    run_dates = all_dates
+    run_dates = [
+        d for d in all_dates
+        if (sim_start is None or pd.Timestamp(d) >= sim_start)
+        and (sim_end is None or pd.Timestamp(d) <= sim_end)
+    ]
 
     if not run_dates:
         logger.warning(
@@ -89,6 +110,7 @@ def run_backtest(
     trade_log_rows    = []
     nav_rows          = []
     pair_daily_rows   = []
+    blocked_rows      = []          # entry-block attribution (date, pair, reason)
     active_pairs      = {}          # { (ticker_a, ticker_b): {formation_stats} }
     cluster_map       = {}          # (ticker_a, ticker_b) -> cluster_id
     pending_retries   = []          # orders to retry next day
@@ -144,7 +166,8 @@ def run_backtest(
                     today_date,
                 )
                 
-                # Immediately extract the active pairs from the finalists
+                # Replace the tradable set only when new finalists exist.
+                # An empty score must not wipe last quarter's pairs.
                 if not candidates.empty:
                     active_pairs = {}
                     cluster_map.clear()
@@ -158,8 +181,11 @@ def run_backtest(
                         }
                         cluster_map[pair] = row["cluster_id"]
                 else:
-                    active_pairs = {}
-                    cluster_map.clear()
+                    logger.info(
+                        "No new finalists on %s — keeping %d existing active pair(s)",
+                        today_date,
+                        len(active_pairs),
+                    )
                     
                 last_cluster_date = today_date
                 logger.info(
@@ -224,7 +250,10 @@ def run_backtest(
 
         # ── Process all active pairs + any open positions ──────────────────────
         open_pairs = list(portfolio.positions.keys())
-        pairs_to_process = list(set(active_pairs.keys()).union(open_pairs))
+        # Sorted for run-to-run reproducibility: set order varies with hash
+        # randomization, and processing order decides which pair wins
+        # capacity / shared-ticker priority on days with competing entries.
+        pairs_to_process = sorted(set(active_pairs.keys()).union(open_pairs))
 
         for ticker_a, ticker_b in pairs_to_process:
             pair     = (ticker_a, ticker_b)
@@ -238,19 +267,31 @@ def run_backtest(
                 std_formation  = open_pos.std_at_entry
                 expected_halflife = open_pos.expected_halflife
                 
-                # ── Dynamic Beta Rebalancing ──
-                # If current beta drifts from formation beta, adjust shares_b
-                current_beta = _compute_live_beta(
-                    ticker_a, ticker_b, prices_to_date, config
-                )
-                if current_beta is not None and abs(current_beta - open_pos.beta_at_entry) > config.beta_rebalance_threshold:
-                    logger.info("Beta rebalance %s/%s: %.3f -> %.3f", ticker_a, ticker_b, open_pos.beta_at_entry, current_beta)
-                    _rebalance_beta(
-                        portfolio,
-                        open_pos,
-                        current_beta,
-                        price_today_map.get(ticker_b, 0.0),
+                # ── Dynamic Beta Rebalancing (off by default) ──
+                # Resize the B leg when live β drifts. Do not change the
+                # formation β/μ/σ used for z-score signals. Disabled via
+                # rebalance_beta_intra_trade: the noisy 60-day β realized cash
+                # buy-high/sell-low and could flip the short leg's sign (I5).
+                if config.rebalance_beta_intra_trade:
+                    current_beta = _compute_live_beta(
+                        ticker_a, ticker_b, prices_to_date, config
                     )
+                    hedge_beta = open_pos.beta_hedge or open_pos.beta_at_entry
+                    if current_beta is not None and abs(current_beta - hedge_beta) > config.beta_rebalance_threshold:
+                        logger.info(
+                            "Beta rebalance %s/%s: hedge %.3f -> %.3f (formation β=%.3f locked)",
+                            ticker_a,
+                            ticker_b,
+                            hedge_beta,
+                            current_beta,
+                            open_pos.beta_at_entry,
+                        )
+                        _rebalance_beta(
+                            portfolio,
+                            open_pos,
+                            current_beta,
+                            price_today_map.get(ticker_b, 0.0),
+                        )
                     
             elif pair in active_pairs:
                 beta_formation = active_pairs[pair]["beta_formation"]
@@ -259,6 +300,33 @@ def run_backtest(
                 expected_halflife = active_pairs[pair]["expected_halflife"]
             else:
                 continue # Should not happen
+
+            # ── Per-pair dollar loss cap ─────────────────────────────────────
+            # Bounds the loss tail: z-stops let losers run to multiples of the
+            # average win (diagnostics I1/I4). Checked before the z-signal so
+            # a breached cap closes even when z is still inside the stop band.
+            if open_pos is not None and config.max_pair_loss_pct is not None:
+                pa = price_today_map.get(ticker_a)
+                pb = price_today_map.get(ticker_b)
+                if pa is not None and pb is not None:
+                    unrealized = (
+                        open_pos.shares_a * pa
+                        + open_pos.shares_b * pb
+                        + open_pos.cumulative_cash_adjustments
+                        - open_pos.entry_net_cash_flow
+                    )
+                    loss_cap = config.max_pair_loss_pct * open_pos.dollar_allocation_at_entry
+                    if unrealized <= -loss_cap:
+                        logger.info(
+                            "DOLLAR_STOP %s/%s — unrealized $%.0f breaches -$%.0f cap",
+                            ticker_a, ticker_b, unrealized, loss_cap,
+                        )
+                        _close_pair(
+                            portfolio, ticker_a, ticker_b, pa, pb,
+                            "DOLLAR_STOP", trade_log_rows, today_date, prices_to_date,
+                        )
+                        stoploss_cooldown[(ticker_a, ticker_b)] = config.pair_stop_cooldown_days
+                        continue
 
             # ── Signal ───────────────────────────────────────────────────────
             signal = get_signal(
@@ -284,7 +352,7 @@ def run_backtest(
                 )
                 continue
 
-            # ── Exit signals ──────────────────────────────────────────────────
+            # ── Exit signals (z/time; DOLLAR_STOP already handled above) ──────
             if signal in ("TAKE_PROFIT", "STOP_LOSS", "TIME_STOP") and open_pos:
                 _close_pair(
                     portfolio, ticker_a, ticker_b, price_a, price_b,
@@ -294,22 +362,36 @@ def run_backtest(
                     stoploss_cooldown[(ticker_a, ticker_b)] = config.pair_stop_cooldown_days
                 continue
 
+            # ── Blocked-entry attribution for HOLD at stretched z ─────────────
+            # get_signal returns HOLD both for |z| inside the entry band and
+            # when the momentum filter / cross requirement suppressed an entry.
+            # Record the latter so filter binding is measurable from data.
+            if signal == "HOLD" and open_pos is None and pair in active_pairs:
+                _attribute_hold_block(
+                    blocked_rows, ticker_a, ticker_b, prices_to_date, today_date,
+                    beta_formation, mean_formation, std_formation, config,
+                )
+
             # ── Entry signals ─────────────────────────────────────────────────
             if signal in ("LONG_SPREAD", "SHORT_SPREAD") and open_pos is None:
                 if not entries_ok:
                     logger.info("Entry blocked by drawdown halt: %s/%s", ticker_a, ticker_b)
+                    _record_block(blocked_rows, today_date, ticker_a, ticker_b, signal, "drawdown_halt")
                     continue
                 if not vix_ok:
                     logger.info("Entry blocked by VIX filter: %s/%s", ticker_a, ticker_b)
+                    _record_block(blocked_rows, today_date, ticker_a, ticker_b, signal, "vix")
                     continue
                 if in_blackout(ticker_a, today_date) or in_blackout(ticker_b, today_date):
                     logger.info(
                         "Entry blocked by earnings blackout: %s/%s", ticker_a, ticker_b
                     )
+                    _record_block(blocked_rows, today_date, ticker_a, ticker_b, signal, "earnings_blackout")
                     continue
 
                 # Only open if it's currently an active pair
                 if (ticker_a, ticker_b) not in active_pairs:
+                    _record_block(blocked_rows, today_date, ticker_a, ticker_b, signal, "not_active")
                     continue
                 if stoploss_cooldown.get((ticker_a, ticker_b), 0) > 0:
                     logger.info(
@@ -318,14 +400,27 @@ def run_backtest(
                         ticker_b,
                         stoploss_cooldown[(ticker_a, ticker_b)],
                     )
+                    _record_block(blocked_rows, today_date, ticker_a, ticker_b, signal, "cooldown")
                     continue
 
                 if not portfolio.can_open(ticker_a, ticker_b, len(active_pairs)):
+                    _record_block(blocked_rows, today_date, ticker_a, ticker_b, signal, "capacity")
                     continue
-                    
+
                 beta = beta_formation
                 mean = mean_formation
                 std  = std_formation
+
+                if beta <= config.min_formation_beta:
+                    logger.info(
+                        "Entry skipped %s/%s — formation β=%.3f <= %.3f",
+                        ticker_a,
+                        ticker_b,
+                        beta,
+                        config.min_formation_beta,
+                    )
+                    _record_block(blocked_rows, today_date, ticker_a, ticker_b, signal, "beta")
+                    continue
 
                 dollar_alloc = portfolio.position_size(nav, size_factor, len(active_pairs))
                 shares_a_raw = dollar_alloc / price_a
@@ -374,6 +469,7 @@ def run_backtest(
                         logger.info(
                             "Trade skipped: profit-to-cost gate %s/%s", ticker_a, ticker_b
                         )
+                        _record_block(blocked_rows, today_date, ticker_a, ticker_b, signal, "cost_gate")
                         continue
 
                     portfolio.cash -= cost
@@ -438,25 +534,31 @@ def run_backtest(
             ]
         )
     )
-
-    logger.info(
-        "Backtest complete — %d trades, final NAV $%.0f",
-        len(trade_log),
-        nav_series["nav"].iloc[-1] if not nav_series.empty else 0,
+    blocked_entries = (
+        pd.DataFrame(blocked_rows)
+        if blocked_rows
+        else pd.DataFrame(columns=["date", "ticker_a", "ticker_b", "signal", "reason"])
     )
 
-    return trade_log, nav_series, pair_daily
+    logger.info(
+        "Backtest complete — %d trades, final NAV $%.0f, %d blocked-entry events",
+        len(trade_log),
+        nav_series["nav"].iloc[-1] if not nav_series.empty else 0,
+        len(blocked_entries),
+    )
+
+    return trade_log, nav_series, pair_daily, blocked_entries
 
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 
 
-def _empty_backtest_outputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def _empty_backtest_outputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Build empty trade log, NAV series, and pair-daily frames with correct columns.
+    Build empty trade log, NAV, pair-daily, and blocked-entry frames.
 
     Returns:
-        Tuple of three empty DataFrames matching ``run_backtest`` outputs.
+        Tuple of four empty DataFrames matching ``run_backtest`` outputs.
     """
     trade_log = pd.DataFrame(
         columns=[
@@ -491,7 +593,10 @@ def _empty_backtest_outputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
             "portfolio_nav_post_trade",
         ]
     )
-    return trade_log, nav_series, pair_daily
+    blocked_entries = pd.DataFrame(
+        columns=["date", "ticker_a", "ticker_b", "signal", "reason"]
+    )
+    return trade_log, nav_series, pair_daily, blocked_entries
 
 
 def _append_eod_pair_snapshots(
@@ -653,9 +758,14 @@ def _execute_trim(
         .set_index("ticker")["adj_close"]
         .to_dict()
     )
+    # Per-day multiplicative step so the position reaches drawdown_trim_factor
+    # of its pre-halt size after drawdown_trim_days days. The old code applied
+    # the full factor every day (0.25^5 ≈ 0.1% — a forced liquidation at the
+    # drawdown low; see diagnostics RC2).
+    daily_factor = config.drawdown_trim_factor ** (1.0 / max(1, config.drawdown_trim_days))
     for pos in list(portfolio.positions.values()):
-        target_shares_a = pos.shares_a * config.drawdown_trim_factor
-        target_shares_b = pos.shares_b * config.drawdown_trim_factor
+        target_shares_a = pos.shares_a * daily_factor
+        target_shares_b = pos.shares_b * daily_factor
         trim_a = pos.shares_a - target_shares_a
         trim_b = pos.shares_b - target_shares_b
 
@@ -673,9 +783,91 @@ def _execute_trim(
         pos.shares_b = target_shares_b
 
         logger.info(
-            "Trim %s/%s — reduced to %.1f%% of position size",
-            pos.ticker_a, pos.ticker_b, config.drawdown_trim_factor * 100,
+            "Trim %s/%s — reduced to %.1f%% of yesterday's size (targeting %.0f%% overall)",
+            pos.ticker_a, pos.ticker_b, daily_factor * 100,
+            config.drawdown_trim_factor * 100,
         )
+
+
+def _record_block(
+    blocked_rows: list,
+    today_date: date,
+    ticker_a: str,
+    ticker_b: str,
+    signal: str,
+    reason: str,
+) -> None:
+    """
+    Append one blocked-entry attribution row.
+
+    Args:
+        blocked_rows: Mutable list of row dicts appended in-place.
+        today_date: Simulation date the entry was suppressed.
+        ticker_a: Leg A ticker.
+        ticker_b: Leg B ticker.
+        signal: The actionable signal that was blocked (LONG/SHORT_SPREAD).
+        reason: Block reason slug (see run_backtest docstring).
+
+    Returns:
+        None.
+    """
+    blocked_rows.append({
+        "date": today_date,
+        "ticker_a": ticker_a,
+        "ticker_b": ticker_b,
+        "signal": signal,
+        "reason": reason,
+    })
+
+
+def _attribute_hold_block(
+    blocked_rows: list,
+    ticker_a: str,
+    ticker_b: str,
+    prices_to_date: pd.DataFrame,
+    today_date: date,
+    beta_formation: float,
+    mean_formation: float,
+    std_formation: float,
+    config: StrategyConfig,
+) -> None:
+    """
+    Attribute a HOLD on a flat active pair whose |z| is beyond the entry band.
+
+    ``get_signal`` returns HOLD both when z is inside the band and when the
+    momentum filter or fresh-cross requirement suppressed an entry. This
+    recomputes z and records ``momentum`` or ``no_cross`` so filter binding is
+    measurable from ``blocked_entries.csv``. Instrumentation only — no effect
+    on trading.
+
+    Args:
+        blocked_rows: Mutable list of row dicts appended in-place.
+        ticker_a: Leg A ticker.
+        ticker_b: Leg B ticker.
+        prices_to_date: Prices through the simulation day.
+        today_date: Simulation date.
+        beta_formation: Locked formation hedge ratio.
+        mean_formation: Locked formation spread mean.
+        std_formation: Locked formation spread std.
+        config: Strategy parameters.
+
+    Returns:
+        None.
+    """
+    _, z_score = compute_spread(
+        ticker_a, ticker_b, beta_formation, mean_formation, std_formation,
+        prices_to_date, today_date, config=config,
+    )
+    if z_score != z_score or abs(z_score) < config.entry_zscore:
+        return
+
+    side = "LONG_SPREAD" if z_score <= -config.entry_zscore else "SHORT_SPREAD"
+    if _is_momentum_breakout(ticker_a, ticker_b, prices_to_date, today_date, config=config):
+        reason = "momentum"
+    else:
+        # Only remaining way get_signal held a stretched flat pair.
+        reason = "no_cross"
+    _record_block(blocked_rows, today_date, ticker_a, ticker_b, side, reason)
 
 
 def _get_adv(ticker: str, prices_to_date: pd.DataFrame) -> float:
@@ -741,6 +933,10 @@ def _rebalance_beta(
     """
     Resize leg B so dollar exposure matches an updated hedge ratio.
 
+    Updates ``pos.beta_hedge`` and ``pos.shares_b`` only. Formation
+    ``beta_at_entry`` / ``mean_at_entry`` / ``std_at_entry`` stay locked
+    so z-score signals are not poisoned.
+
     Args:
         portfolio: Active portfolio (mutates cash and position).
         pos: Open position to adjust.
@@ -758,7 +954,8 @@ def _rebalance_beta(
     # Wait, the rule is shares_b = -(shares_a * price_a * new_beta) / price_b
     # Alternatively, just scale shares_b by the beta ratio.
     old_shares_b = pos.shares_b
-    target_shares_b = pos.shares_b * (new_beta / pos.beta_at_entry) if pos.beta_at_entry != 0 else 0
+    hedge_beta = pos.beta_hedge if pos.beta_hedge else pos.beta_at_entry
+    target_shares_b = pos.shares_b * (new_beta / hedge_beta) if hedge_beta != 0 else 0
     
     if target_shares_b == 0:
         return
@@ -770,7 +967,7 @@ def _rebalance_beta(
     portfolio.cash += cash_impact
     pos.cumulative_cash_adjustments += cash_impact
     pos.shares_b = target_shares_b
-    pos.beta_at_entry = new_beta # Update anchor to prevent constant rebalancing
+    pos.beta_hedge = new_beta
 
 
 def _record_open(
