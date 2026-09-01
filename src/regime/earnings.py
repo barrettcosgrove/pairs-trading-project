@@ -39,6 +39,43 @@ def _quarter_end_dates(as_of: date) -> list[pd.Timestamp]:
     return anchors
 
 
+def earnings_within(
+    ticker: str,
+    as_of: date,
+    n_trading_days: int,
+    trading_days: pd.DatetimeIndex,
+    earnings_by_ticker: dict[str, list[pd.Timestamp]],
+) -> bool:
+    """
+    Return True if the ticker reports earnings within n trading days ahead.
+
+    Uses real per-company earnings dates (data/raw/earnings.parquet via
+    load_earnings_dates). "Within" counts strictly-after as_of through the
+    n-th following trading day, inclusive. A report dated on a non-trading
+    day is attributed to the next trading day.
+
+    Args:
+        ticker: Ticker symbol.
+        as_of: Evaluation date.
+        n_trading_days: Look-ahead horizon in trading days (>= 1).
+        trading_days: Sorted DatetimeIndex of the simulation trading calendar.
+        earnings_by_ticker: Ticker -> sorted list of earnings Timestamps.
+
+    Returns:
+        True when an earnings date falls in (as_of, as_of + n trading days].
+        False when the ticker has no known earnings dates.
+    """
+    dates = earnings_by_ticker.get(ticker)
+    if not dates:
+        return False
+    as_of_ts = pd.Timestamp(as_of)
+    future = trading_days[trading_days > as_of_ts]
+    if len(future) == 0:
+        return False
+    horizon = future[min(n_trading_days, len(future)) - 1]
+    return any(as_of_ts < d <= horizon for d in dates)
+
+
 def in_blackout(ticker: str, as_of: date) -> bool:
     """
     Return whether a ticker is in an earnings blackout window on a given date.

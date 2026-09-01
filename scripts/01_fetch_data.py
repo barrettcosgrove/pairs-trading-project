@@ -109,11 +109,12 @@ Examples:
     parser.add_argument(
         "--stage",
         action="append",
-        choices=["all", "prices", "regime", "fundamentals"],
+        choices=["all", "prices", "regime", "fundamentals", "earnings"],
         default=None,
         help=(
             "Fetch only selected stage(s). May be passed multiple times. "
-            "Default: all stages in prices -> regime -> fundamentals order."
+            "Default: all stages in prices -> regime -> fundamentals -> "
+            "earnings order."
         ),
     )
 
@@ -287,7 +288,7 @@ def _resolve_stages(args: argparse.Namespace) -> list[str]:
     Returns:
         Ordered list of stages to run.
     """
-    stage_order = ["prices", "regime", "fundamentals"]
+    stage_order = ["prices", "regime", "fundamentals", "earnings"]
     requested = args.stage or ["all"]
 
     if "all" in requested:

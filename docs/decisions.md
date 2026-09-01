@@ -138,3 +138,51 @@ dollar-neutral book would earn the T-bill rate (2–5% over 2022–2024,
 alpha stayed ~zero — inflating performance rather than demonstrating edge.
 Revisit only if the goal changes from "show trading edge" to "model total
 account return", and label the interest component separately if so.
+
+## Entry band cap and plateau stop replace part of the hard-stop loss tail
+
+Date: August 2026 (Round 4)
+
+Decision: Added `entry_zscore_max = 2.0` (no entry when |z| already beyond
+2.0 — the cross must land inside the 1.25–2.0 band) and a plateau stop
+(`stop_plateau_zscore = 2.75`, `stop_plateau_days = 3`: exit after three
+consecutive days at or beyond 2.75 adverse). New exit action PLATEAU_STOP;
+it triggers the same cooldown as STOP_LOSS.
+
+Evidence: Trade-level instrumentation (z_entry, z_exit, vol_ratio columns
+in trade_log.csv) showed (a) EXC/SO "crossed" from inside the band to
+z=−4.9 in one day — past the stop itself — and lost −$923 the next day;
+GS/MS gapped to 2.2 and stopped in 3 days; (b) every slow-bleed stop-out
+(TMO/DHR, NOW/ANET, WEC/XEL, SO/WEC) lingered at z 2.4–3.3 for 1–4 weeks
+without re-approaching the mean before breaching 3.5 — exiting on a
+sustained plateau realizes ~1σ less loss. A plain tighter stop (2.0–3.0)
+had already tested worse in Round 3 because single-day spikes revert; the
+persistence requirement is what makes the earlier exit safe. See
+docs/diagnostics.md Round 4.
+
+## Defensive pre-earnings exit on real earnings dates; no earnings entry block
+
+Date: August 2026 (Round 5)
+
+Decision: Fetch real per-ticker earnings dates
+(`data/raw/earnings.parquet`, new fetch stage). Force-close an open pair
+2 trading days before either leg reports, but only when the position is
+already losing (adverse z ≥ 1.75; 1.5 tested — it clipped seven marginal
+positions that mostly recovered, dropping the profitable rate to 69%).
+No cooldown afterwards — the pair may re-enter on a fresh cross once the
+event has passed. Deliberately did NOT add an entry blackout around real
+earnings dates, and left the quarter-end `in_blackout` approximation
+untouched. Also raised `max_weight_per_pair` 0.25 → 0.35: with the loss
+tail cut, expectancy is positive and scales linearly (Sharpe 0.33 → 0.34,
+max dd 4.2% → 5.1%); do not raise further without retesting concentration.
+
+Evidence: The two largest losses in the book were single-day earnings gaps
+through the z-stop — SCHW/MS −$4.0k (SCHW −10% on its 2024-07-16 print,
+z −2.3 → −5.6 in one day) and CVX/VLO −$1.6k (VLO 2024-10-24 / CVX
+2024-11-01) — both in the OOS window; no entry-time feature (vol ratio,
+entry z) flagged them. Losing positions ahead of a print carry open-ended
+gap risk, while entries near earnings repeatedly WON (DE/HON +$963,
+ADSK/WDAY +$775, TXN/QCOM +$621 were all opened within 5 trading days of
+a report): an unconditional exit or entry blackout gives back ~$4k of
+wins. Conditional exit what-if: net +$3.1k vs +$0.4k, OOS −$1.9k → +$2.8k.
+See docs/diagnostics.md Round 5.

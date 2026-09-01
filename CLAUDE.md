@@ -33,6 +33,7 @@ formation z-score** (not empirical percentiles).
 | scikit-learn | 1.4+ | K-means, silhouette scoring |
 | statsmodels | 0.14+ | Johansen, OLS regression |
 | yfinance | 0.2.40+ | Price and fundamental data |
+| lxml | 6+ | HTML parsing for yfinance earnings dates |
 | pyarrow | 15+ | Parquet I/O |
 | matplotlib + seaborn | latest | Visualization (unused until script 05) |
 | pytest | 8+ | Unit testing |
@@ -191,6 +192,11 @@ load_vix(start: date | None, end: date | None) -> pd.Series
 load_universe(as_of: date) -> list[str]
     # tickers passing all hard filters on that date
 
+load_earnings_dates() -> pd.DataFrame
+    # columns: [ticker, earnings_date] (tz-naive normalized Timestamps)
+    # empty frame (with columns) when data/raw/earnings.parquet is missing —
+    # callers must treat that as "earnings features disabled"
+
 # src/clustering/correlation.py — Althan's input/output
 build_distance_matrix(returns: pd.DataFrame, window: int) -> pd.DataFrame
     # NxN DataFrame, index and columns are ticker strings
@@ -241,16 +247,25 @@ get_signal(
 ) -> str
     # returns one of:
     # "LONG_SPREAD", "SHORT_SPREAD", "TAKE_PROFIT",
-    # "STOP_LOSS", "TIME_STOP", "HOLD"
+    # "STOP_LOSS", "PLATEAU_STOP", "TIME_STOP", "HOLD"
     # z uses locked formation β/μ/σ only
+    # entries require |z| within [entry_zscore, entry_zscore_max]
+    # PLATEAU_STOP: adverse z >= stop_plateau_zscore for stop_plateau_days
+    # consecutive days (engine applies the STOP_LOSS cooldown to it)
 
 # src/backtest/engine.py
 run_backtest(config: StrategyConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]
     # (trade_log, nav_series, pair_daily_mtm, blocked_entries)
     # blocked_entries: [date, ticker_a, ticker_b, signal, reason] — one row per
     # suppressed actionable entry (drawdown_halt, vix, earnings_blackout,
-    # not_active, cooldown, capacity, beta, cost_gate, momentum, no_cross)
-    # trade_log exit actions include DOLLAR_STOP when max_pair_loss_pct is set
+    # not_active, cooldown, capacity, beta, cost_gate, momentum, no_cross,
+    # entry_band)
+    # trade_log exit actions include PLATEAU_STOP, EARNINGS_EXIT (losing
+    # position closed ahead of a leg's earnings report; no cooldown), and
+    # DOLLAR_STOP when max_pair_loss_pct is set
+    # trade_log diagnostic columns: entries carry beta_f/mean_f/std_f,
+    # expected_halflife, z_entry, spread_vol_20d, vol_ratio; exits carry
+    # beta_f/mean_f/std_f, expected_halflife, z_exit, days_open
 ```
 
 ---
@@ -284,8 +299,12 @@ uv run python scripts/03_run_backtest.py
 | `k_min` / `k_max` | 4 / 6 | Silhouette-scored k |
 | `entry_zscore` | 1.25 | Absolute formation z to enter (Round 3 sweep; was 1.5) |
 | `entry_requires_cross` | True | Enter only the day z first crosses the band |
+| `entry_zscore_max` | 2.0 | Entry band upper cap — no entry when the cross gaps past this (Round 4); None disables |
 | `take_profit_zscore` | 1.0 | Absolute z to take profit (Round 3 sweep; was 0.5) |
 | `stop_loss_zscore` | 3.5 | Absolute z to stop |
+| `stop_plateau_zscore` / `stop_plateau_days` | 2.75 / 3 | Exit after N consecutive days at/beyond adverse z (Round 4); days=0 disables |
+| `earnings_exit_days_before` | 2 | Close a LOSING pair this many trading days before either leg reports (Round 5); 0 disables |
+| `earnings_exit_min_adverse_z` | 1.75 | Adverse-z floor for the pre-earnings exit — winners are held through earnings |
 | `time_stop_days` | 50 | Force close (must be ≥ 1.5× `halflife_max`) |
 | `max_pair_loss_pct` | None | Optional per-pair dollar loss cap; exit action DOLLAR_STOP |
 | `momentum_window` / `momentum_threshold` | 14 / 0.15 | Block entries if either leg moved this much |
@@ -305,7 +324,7 @@ uv run python scripts/03_run_backtest.py
 | `same_sector_score` / `cross_sector_score` / `unknown_sector_score` | 1.0 / 0.4 / 0.5 | |
 | `rebalance_beta_intra_trade` | False | Intra-trade B-leg resize disabled (Round 3) |
 | `beta_rebalance_threshold` | 0.15 | Only if rebalance enabled; never overwrite `beta_at_entry` |
-| `max_weight_per_pair` | 0.25 | Per-leg allocation cap as fraction of NAV |
+| `max_weight_per_pair` | 0.35 | Per-leg allocation cap as fraction of NAV (0.25 → 0.35 in Round 5; retest before raising further) |
 | `target_concurrent_pairs` | 10 | Sizing divisor cap (10 ≈ equal split across active pairs) |
 | `min_dollar_volume` | 25,000,000 | 30-day ADV$ proxy |
 | `backtest_start_date` / `backtest_end_date` | 2022-01-01 / 2024-12-31 | Simulation window only |
@@ -397,6 +416,20 @@ compounds to near-liquidation.
 (`target_concurrent_pairs` 4) and per-pair dollar caps (`max_pair_loss_pct`
 0.02–0.05) both LOWERED NAV and win rate in the Round 3 test matrix.
 Re-test before changing either; see `docs/diagnostics.md`.
+
+**Plateau stop is a persistence rule, not a tighter stop** — Round 3 showed
+hard stops at 2.0–3.0 test worse because single-day spikes usually revert.
+PLATEAU_STOP fires only after `stop_plateau_days` *consecutive* adverse
+days at ≥ `stop_plateau_zscore`. Do not "simplify" it into a lower
+`stop_loss_zscore`.
+
+**Earnings features need data/raw/earnings.parquet** — fetched via
+`scripts/01_fetch_data.py --stage earnings` (needs `lxml`). When the file
+is missing the engine logs a warning and silently disables the pre-earnings
+exit — a backtest without it will show the −$4k earnings-gap tail again.
+Never add an entry blackout around real earnings dates without data: entries
+near earnings repeatedly WON (DE/HON, ADSK/WDAY, TXN/QCOM); only *losing*
+positions are exited before a print (`earnings_exit_min_adverse_z`).
 
 **Scoring reads the module-global CONFIG** — `composite.py` uses
 `CONFIG.min_cointegration_score` / `finalists_per_cluster` from its own

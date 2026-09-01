@@ -16,8 +16,14 @@ from src.backtest.portfolio import Portfolio, Position
 from src.clustering.correlation import build_distance_matrix
 from src.clustering.kmeans import run_clustering
 from src.config import StrategyConfig
-from src.data.load import load_prices, load_returns, load_universe, load_vix
-from src.regime.earnings import in_blackout
+from src.data.load import (
+    load_earnings_dates,
+    load_prices,
+    load_returns,
+    load_universe,
+    load_vix,
+)
+from src.regime.earnings import earnings_within, in_blackout
 from src.regime.vix import new_entries_permitted
 from src.scoring.composite import score_candidates
 from src.signals.entry_exit import _is_momentum_breakout, get_signal
@@ -51,8 +57,13 @@ def run_backtest(
             (pnl = spread price P&L; on exits realized_net_usd = pnl minus exit
             cost minus entry fee; return_pct = realized_net_usd divided by
             long-leg dollar allocation times 100. Opens: realized_net_usd 0,
-            return_pct NaN. Exit actions: TAKE_PROFIT, STOP_LOSS, TIME_STOP,
-            and DOLLAR_STOP when max_pair_loss_pct is breached.)
+            return_pct NaN. Exit actions: TAKE_PROFIT, STOP_LOSS,
+            PLATEAU_STOP, TIME_STOP, EARNINGS_EXIT (losing position closed
+            ahead of a leg's earnings report), and DOLLAR_STOP when
+            max_pair_loss_pct is breached. Diagnostic columns: entries carry beta_f/mean_f/
+            std_f, expected_halflife, z_entry, spread_vol_20d, vol_ratio;
+            exits carry beta_f/mean_f/std_f, expected_halflife, z_exit,
+            days_open.)
 
         nav_series columns:
             date, nav, cash, gross_exposure, drawdown_from_peak
@@ -64,7 +75,7 @@ def run_backtest(
         blocked_entries columns (one row per pair-day an actionable entry was
         suppressed): date, ticker_a, ticker_b, signal, reason — reason is one
         of drawdown_halt, vix, earnings_blackout, not_active, cooldown,
-        capacity, beta, cost_gate, momentum, no_cross.
+        capacity, beta, cost_gate, momentum, no_cross, entry_band.
     """
     # ── Load full dataset ─────────────────────────────────────────────────────
     # Load all available history so clustering / Johansen have warmup. The
@@ -84,6 +95,20 @@ def run_backtest(
     vix_series  = load_vix(start=None, end=sim_end.date() if sim_end is not None else None)
 
     all_dates = sorted(all_prices["date"].unique())
+    trading_days = pd.DatetimeIndex(all_dates)
+
+    # Real earnings dates for the defensive pre-earnings exit. Empty frame
+    # (file not fetched) disables the feature gracefully.
+    earnings_df = load_earnings_dates()
+    earnings_by_ticker: dict[str, list[pd.Timestamp]] = {
+        t: sorted(g["earnings_date"]) for t, g in earnings_df.groupby("ticker")
+    }
+    if config.earnings_exit_days_before > 0 and not earnings_by_ticker:
+        logger.warning(
+            "earnings_exit_days_before=%d but no earnings dates loaded — "
+            "pre-earnings exit disabled for this run.",
+            config.earnings_exit_days_before,
+        )
     run_dates = [
         d for d in all_dates
         if (sim_start is None or pd.Timestamp(d) >= sim_start)
@@ -328,6 +353,51 @@ def run_backtest(
                         stoploss_cooldown[(ticker_a, ticker_b)] = config.pair_stop_cooldown_days
                         continue
 
+            # ── Defensive pre-earnings exit ──────────────────────────────────
+            # Close a LOSING position before either leg reports: earnings gaps
+            # blow through the z-stop in a single day (SCHW -10% on its
+            # 2024-07-16 print took -$4.0k). Winning/flat positions are held —
+            # earnings frequently resolve the spread in our favor. No cooldown:
+            # the pair may re-enter on a fresh cross after the event.
+            if (
+                open_pos is not None
+                and config.earnings_exit_days_before > 0
+                and earnings_by_ticker
+            ):
+                reports_soon = any(
+                    earnings_within(
+                        t, today_date, config.earnings_exit_days_before,
+                        trading_days, earnings_by_ticker,
+                    )
+                    for t in (ticker_a, ticker_b)
+                )
+                if reports_soon:
+                    _, z_now = compute_spread(
+                        ticker_a, ticker_b, beta_formation, mean_formation,
+                        std_formation, prices_to_date, today_date, config=config,
+                    )
+                    adverse = -z_now if current_position == "LONG_SPREAD" else z_now
+                    if (
+                        z_now == z_now
+                        and adverse >= config.earnings_exit_min_adverse_z
+                    ):
+                        pa = price_today_map.get(ticker_a)
+                        pb = price_today_map.get(ticker_b)
+                        if pa is not None and pb is not None:
+                            logger.info(
+                                "EARNINGS_EXIT %s/%s — leg reports within %d "
+                                "td and adverse z=%.2f >= %.2f",
+                                ticker_a, ticker_b,
+                                config.earnings_exit_days_before,
+                                adverse, config.earnings_exit_min_adverse_z,
+                            )
+                            _close_pair(
+                                portfolio, ticker_a, ticker_b, pa, pb,
+                                "EARNINGS_EXIT", trade_log_rows, today_date,
+                                prices_to_date,
+                            )
+                            continue
+
             # ── Signal ───────────────────────────────────────────────────────
             signal = get_signal(
                 ticker_a,
@@ -353,12 +423,12 @@ def run_backtest(
                 continue
 
             # ── Exit signals (z/time; DOLLAR_STOP already handled above) ──────
-            if signal in ("TAKE_PROFIT", "STOP_LOSS", "TIME_STOP") and open_pos:
+            if signal in ("TAKE_PROFIT", "STOP_LOSS", "PLATEAU_STOP", "TIME_STOP") and open_pos:
                 _close_pair(
                     portfolio, ticker_a, ticker_b, price_a, price_b,
                     signal, trade_log_rows, today_date, prices_to_date,
                 )
-                if signal == "STOP_LOSS":
+                if signal in ("STOP_LOSS", "PLATEAU_STOP"):
                     stoploss_cooldown[(ticker_a, ticker_b)] = config.pair_stop_cooldown_days
                 continue
 
@@ -449,6 +519,20 @@ def run_backtest(
                     continue
 
                 if fill["success"]:
+                    # Diagnostics: entry z and the ratio of recent realized
+                    # spread vol to the locked formation σ. High ratios flag
+                    # regime breaks where "1.25σ" is small in current-vol terms.
+                    _, z_entry = compute_spread(
+                        ticker_a, ticker_b, beta, mean, std,
+                        prices_to_date, today_date, config=config,
+                    )
+                    recent_vol = _spread_recent_vol(
+                        ticker_a, ticker_b, beta, prices_to_date, config
+                    )
+                    vol_ratio = (
+                        recent_vol / std if (recent_vol == recent_vol and std > 0)
+                        else math.nan
+                    )
                     trade_dict = {
                         "ticker_a":        ticker_a,
                         "ticker_b":        ticker_b,
@@ -499,6 +583,11 @@ def run_backtest(
                         "dollar_allocation_at_entry": float(dollar_alloc),
                         "realized_net_usd": 0.0,
                         "return_pct": math.nan,
+                        "beta_f": beta, "mean_f": mean, "std_f": std,
+                        "expected_halflife": expected_halflife,
+                        "z_entry": z_entry,
+                        "spread_vol_20d": recent_vol,
+                        "vol_ratio": vol_ratio,
                     })
 
         # ── Daily borrow accrual ──────────────────────────────────────────────
@@ -715,6 +804,12 @@ def _close_pair(
     alloc = float(pos.dollar_allocation_at_entry)
     entry_fee = float(pos.entry_transaction_cost)
 
+    # Diagnostics: z at exit under the locked formation stats.
+    _, z_exit = compute_spread(
+        ticker_a, ticker_b, pos.beta_at_entry, pos.mean_at_entry,
+        pos.std_at_entry, prices_to_date, today_date,
+    )
+
     pnl = portfolio.close_position(ticker_a, ticker_b, price_a, price_b, reason)
 
     realized_net = float(pnl) - exit_cost - entry_fee
@@ -733,6 +828,11 @@ def _close_pair(
         "dollar_allocation_at_entry": alloc,
         "realized_net_usd": realized_net,
         "return_pct": ret_pct,
+        "beta_f": pos.beta_at_entry, "mean_f": pos.mean_at_entry,
+        "std_f": pos.std_at_entry,
+        "expected_halflife": pos.expected_halflife,
+        "z_exit": z_exit,
+        "days_open": pos.days_open,
     })
 
 
@@ -862,12 +962,56 @@ def _attribute_hold_block(
         return
 
     side = "LONG_SPREAD" if z_score <= -config.entry_zscore else "SHORT_SPREAD"
-    if _is_momentum_breakout(ticker_a, ticker_b, prices_to_date, today_date, config=config):
+    if (
+        config.entry_zscore_max is not None
+        and abs(z_score) > config.entry_zscore_max
+    ):
+        reason = "entry_band"
+    elif _is_momentum_breakout(ticker_a, ticker_b, prices_to_date, today_date, config=config):
         reason = "momentum"
     else:
         # Only remaining way get_signal held a stretched flat pair.
         reason = "no_cross"
     _record_block(blocked_rows, today_date, ticker_a, ticker_b, side, reason)
+
+
+def _spread_recent_vol(
+    ticker_a: str,
+    ticker_b: str,
+    beta: float,
+    prices_to_date: pd.DataFrame,
+    config: StrategyConfig,
+) -> float:
+    """
+    Std of daily log-spread changes over the trailing volatility_short_window.
+
+    Uses the locked formation β so the measure is comparable to σ_F. Only data
+    already in ``prices_to_date`` (truncated to the simulation day) is used —
+    no look-ahead.
+
+    Args:
+        ticker_a: Leg A ticker.
+        ticker_b: Leg B ticker.
+        beta: Locked formation hedge ratio.
+        prices_to_date: Long-form prices through the simulation day.
+        config: Strategy parameters (uses ``volatility_short_window``).
+
+    Returns:
+        Standard deviation of daily spread differences, or NaN when fewer than
+        five observations are available.
+    """
+    window = config.volatility_short_window
+    pivot = (
+        prices_to_date[prices_to_date["ticker"].isin([ticker_a, ticker_b])]
+        .pivot(index="date", columns="ticker", values="adj_close")
+    )
+    if ticker_a not in pivot.columns or ticker_b not in pivot.columns:
+        return float("nan")
+    aligned = pivot[[ticker_a, ticker_b]].dropna().tail(window + 1)
+    if len(aligned) < 6:
+        return float("nan")
+    spread = np.log(aligned[ticker_a]) - beta * np.log(aligned[ticker_b])
+    return float(spread.diff().dropna().std())
 
 
 def _get_adv(ticker: str, prices_to_date: pd.DataFrame) -> float:

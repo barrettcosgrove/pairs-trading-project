@@ -143,3 +143,68 @@ def test_hold_between_thresholds_when_open():
 def test_nan_beta_returns_hold():
     prices = _make_prices([0.0, 2.0])
     assert _signal(prices, beta_formation=float("nan")) == "HOLD"
+
+
+# ---------------------------------------------------------------------------
+# Round 4: entry band cap and plateau stop
+# ---------------------------------------------------------------------------
+
+def test_entry_band_cap_blocks_gap_cross():
+    # Fresh cross, but z gapped straight past entry_zscore_max — no entry.
+    prices = _make_prices([0.5, CONFIG.entry_zscore_max + 0.5])
+    assert _signal(prices) == "HOLD"
+
+
+def test_entry_band_cap_allows_normal_cross():
+    z_in_band = (CONFIG.entry_zscore + CONFIG.entry_zscore_max) / 2
+    prices = _make_prices([0.5, z_in_band])
+    assert _signal(prices) == "SHORT_SPREAD"
+
+
+def test_entry_band_cap_disabled_allows_gap_cross():
+    cfg = replace(CONFIG, entry_zscore_max=None)
+    prices = _make_prices([0.5, 2.5])
+    assert _signal(prices, cfg=cfg) == "SHORT_SPREAD"
+
+
+def test_plateau_stop_fires_after_consecutive_adverse_days():
+    plateau = CONFIG.stop_plateau_zscore + 0.05
+    prices = _make_prices([1.5] + [plateau] * CONFIG.stop_plateau_days)
+    sig = _signal(
+        prices,
+        current_position="SHORT_SPREAD",
+        days_open=CONFIG.stop_plateau_days,
+    )
+    assert sig == "PLATEAU_STOP"
+
+
+def test_plateau_stop_needs_full_consecutive_run():
+    plateau = CONFIG.stop_plateau_zscore + 0.05
+    # A dip back inside the plateau band on the middle day breaks the run.
+    path = [1.5] + [plateau] * (CONFIG.stop_plateau_days - 1) + [1.5, plateau]
+    prices = _make_prices(path)
+    sig = _signal(
+        prices,
+        current_position="SHORT_SPREAD",
+        days_open=len(path) - 1,
+    )
+    assert sig == "HOLD"
+
+
+def test_plateau_stop_long_spread_adverse_is_negative_z():
+    plateau = -(CONFIG.stop_plateau_zscore + 0.05)
+    prices = _make_prices([-1.5] + [plateau] * CONFIG.stop_plateau_days)
+    sig = _signal(
+        prices,
+        current_position="LONG_SPREAD",
+        days_open=CONFIG.stop_plateau_days,
+    )
+    assert sig == "PLATEAU_STOP"
+
+
+def test_plateau_stop_disabled():
+    cfg = replace(CONFIG, stop_plateau_days=0)
+    plateau = CONFIG.stop_plateau_zscore + 0.05
+    prices = _make_prices([1.5] + [plateau] * 4)
+    sig = _signal(prices, cfg=cfg, current_position="SHORT_SPREAD", days_open=4)
+    assert sig == "HOLD"

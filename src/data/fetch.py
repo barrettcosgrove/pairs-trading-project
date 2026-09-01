@@ -49,6 +49,7 @@ RAW_DIR = Path("data/raw")
 FETCH_STATUS_PATH = RAW_DIR / "fetch_status.json"
 FUNDAMENTALS_CHECKPOINT_PATH = RAW_DIR / "fundamentals_checkpoint.parquet"
 FETCH_MANIFEST_PATH = RAW_DIR / "fetch_manifest.json"
+EARNINGS_PATH = RAW_DIR / "earnings.parquet"
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +156,7 @@ def fetch_all(
         len(CANDIDATE_TICKERS),
     )
 
-    selected_stages = stages or {"prices", "regime", "fundamentals"}
+    selected_stages = stages or {"prices", "regime", "fundamentals", "earnings"}
     regime_sources: dict[str, str] = {"vix": "unknown", "spy": "unknown"}
 
     if "prices" in selected_stages:
@@ -190,6 +191,13 @@ def fetch_all(
                 request_delay=fundamentals_delay,
                 rate_limit_cooldown=rate_limit_cooldown,
             )
+
+    if "earnings" in selected_stages:
+        if _should_skip_stage(EARNINGS_PATH, resume, force):
+            logger.info("Skipping earnings; %s already exists.", EARNINGS_PATH)
+            _write_fetch_status("earnings", "skipped", message="output already exists")
+        else:
+            fetch_earnings(CANDIDATE_TICKERS, retry_attempts)
 
     logger.info("All fetches complete. Files written to %s", RAW_DIR)
     _write_fetch_manifest(regime_sources["vix"], regime_sources["spy"])
@@ -450,6 +458,80 @@ def fetch_fundamentals(
             len(failed),
             ", ".join(failed),
         )
+
+
+def fetch_earnings(
+    tickers: list[str],
+    retry_attempts: int = 3,
+    request_delay: float = 0.5,
+) -> pd.DataFrame:
+    """
+    Fetch historical and scheduled earnings dates for all tickers.
+
+    Writes data/raw/earnings.parquet with one row per (ticker, earnings_date).
+    Dates are timezone-naive normalized timestamps. Earnings dates are public
+    information announced well in advance, so using them in the backtest for
+    entry/exit decisions on or before the report date is look-ahead safe.
+
+    Args:
+        tickers: Ticker symbols to fetch.
+        retry_attempts: Retries per ticker on transient failures.
+        request_delay: Base sleep between ticker requests (seconds).
+
+    Returns:
+        DataFrame with columns [ticker, earnings_date], sorted, deduplicated.
+    """
+    rows: list[dict] = []
+    failed: list[str] = []
+    for ticker in tickers:
+        for attempt in range(1, retry_attempts + 1):
+            try:
+                ed = yf.Ticker(ticker).get_earnings_dates(limit=40)
+                if ed is not None and not ed.empty:
+                    for ts in ed.index:
+                        rows.append({
+                            "ticker": ticker,
+                            "earnings_date": pd.Timestamp(ts)
+                            .tz_localize(None)
+                            .normalize(),
+                        })
+                break
+            except YFRateLimitError:
+                logger.warning(
+                    "Rate limited fetching earnings for %s (attempt %d/%d)",
+                    ticker, attempt, retry_attempts,
+                )
+                time.sleep(30.0 * attempt)
+            except Exception as exc:
+                logger.warning(
+                    "Earnings fetch failed for %s (attempt %d/%d): %s",
+                    ticker, attempt, retry_attempts, exc,
+                )
+                time.sleep(request_delay * attempt)
+        else:
+            failed.append(ticker)
+        time.sleep(request_delay + random.uniform(0.0, 0.3))
+
+    frame = (
+        pd.DataFrame(rows)
+        .drop_duplicates()
+        .sort_values(["ticker", "earnings_date"])
+        .reset_index(drop=True)
+        if rows
+        else pd.DataFrame(columns=["ticker", "earnings_date"])
+    )
+    frame.to_parquet(EARNINGS_PATH, index=False)
+    logger.info(
+        "Earnings dates written: %d rows for %d tickers (%d failed: %s)",
+        len(frame), frame["ticker"].nunique() if not frame.empty else 0,
+        len(failed), failed or "none",
+    )
+    _write_fetch_status(
+        "earnings",
+        "complete" if not failed else "partial",
+        message=f"{len(failed)} tickers failed" if failed else None,
+    )
+    return frame
 
 
 def fetch_vix_cboe(start_date: date) -> pd.DataFrame:

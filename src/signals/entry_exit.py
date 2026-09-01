@@ -5,6 +5,7 @@
 import logging
 from datetime import date
 
+import numpy as np
 import pandas as pd
 
 from src.config import CONFIG, StrategyConfig
@@ -17,6 +18,7 @@ LONG_SPREAD = "LONG_SPREAD"
 SHORT_SPREAD = "SHORT_SPREAD"
 TAKE_PROFIT = "TAKE_PROFIT"
 STOP_LOSS = "STOP_LOSS"
+PLATEAU_STOP = "PLATEAU_STOP"
 TIME_STOP = "TIME_STOP"
 HOLD = "HOLD"
 
@@ -142,6 +144,52 @@ def _prior_day_zscore(
     return z_prev
 
 
+def _recent_zscores(
+    ticker_a: str,
+    ticker_b: str,
+    prices: pd.DataFrame,
+    as_of: date,
+    beta_formation: float,
+    mean_formation: float,
+    std_formation: float,
+    n_days: int,
+    config: StrategyConfig,
+) -> list[float]:
+    """
+    Compute formation z-scores for the last ``n_days`` trading days incl. as_of.
+
+    Args:
+        ticker_a: Ticker symbol for leg A.
+        ticker_b: Ticker symbol for leg B.
+        prices: Long-form prices with columns [date, ticker, adj_close].
+        as_of: End date (inclusive); only data on or before is used.
+        beta_formation: Locked formation hedge ratio.
+        mean_formation: Locked formation spread mean.
+        std_formation: Locked formation spread std.
+        n_days: Number of trailing trading days to compute.
+        config: Strategy parameters (σ floor).
+
+    Returns:
+        List of z-scores oldest-to-newest; may be shorter than ``n_days`` if
+        history is insufficient. Empty when prices are missing or σ invalid.
+    """
+    sigma = max(float(std_formation), config.min_formation_spread_std)
+    if sigma <= 0.0 or sigma != sigma:
+        return []
+    pivot = (
+        prices[
+            (prices["date"] <= pd.Timestamp(as_of))
+            & (prices["ticker"].isin([ticker_a, ticker_b]))
+        ]
+        .pivot(index="date", columns="ticker", values="adj_close")
+    )
+    if ticker_a not in pivot.columns or ticker_b not in pivot.columns:
+        return []
+    aligned = pivot[[ticker_a, ticker_b]].dropna().tail(n_days)
+    spread = np.log(aligned[ticker_a]) - beta_formation * np.log(aligned[ticker_b])
+    return list((spread - mean_formation) / sigma)
+
+
 def get_signal(
     ticker_a: str,
     ticker_b: str,
@@ -217,6 +265,29 @@ def get_signal(
             )
             return TIME_STOP
 
+        # Plateau stop: sustained adverse z near (but inside) the hard stop
+        # means the reversion premise has failed — exit before the 3.5 breach
+        # realizes another ~1σ of loss. Adverse z is -z for LONG_SPREAD, +z
+        # for SHORT_SPREAD. days_open guard keeps the lookback inside the
+        # holding period (entry z is capped below the plateau level anyway).
+        if cfg.stop_plateau_days > 0 and days_open >= cfg.stop_plateau_days:
+            recent = _recent_zscores(
+                ticker_a, ticker_b, prices, as_of,
+                beta_formation, mean_formation, std_formation,
+                cfg.stop_plateau_days, cfg,
+            )
+            sign = -1.0 if current_position == LONG_SPREAD else 1.0
+            if len(recent) == cfg.stop_plateau_days and all(
+                sign * z >= cfg.stop_plateau_zscore for z in recent
+            ):
+                logger.info(
+                    "PLATEAU_STOP %s/%s — adverse z >= %.2f for %d consecutive "
+                    "days (today z=%.2f)",
+                    ticker_a, ticker_b, cfg.stop_plateau_zscore,
+                    cfg.stop_plateau_days, z_score,
+                )
+                return PLATEAU_STOP
+
         if current_position == LONG_SPREAD:
             if z_score <= -cfg.stop_loss_zscore:
                 logger.info(
@@ -260,6 +331,16 @@ def get_signal(
         return HOLD
 
     if abs(z_score) < cfg.entry_zscore:
+        return HOLD
+
+    # Entry band upper cap: |z| already far beyond the entry threshold is a
+    # one-day repricing (news), not a dislocation that diffused outward — and
+    # the remaining distance to the stop is too small to be worth the risk.
+    if cfg.entry_zscore_max is not None and abs(z_score) > cfg.entry_zscore_max:
+        logger.info(
+            "ENTRY-BAND HOLD %s/%s — z=%.2f beyond entry cap %.2f",
+            ticker_a, ticker_b, z_score, cfg.entry_zscore_max,
+        )
         return HOLD
 
     if _is_momentum_breakout(ticker_a, ticker_b, prices, as_of, config=cfg):

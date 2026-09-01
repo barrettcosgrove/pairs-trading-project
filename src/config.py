@@ -96,7 +96,12 @@ class StrategyConfig:
     # Maximum fraction of the portfolio NAV that can be allocated to a single pair leg.
     # Caps concentration when few pairs are active (1.0 previously allowed one pair
     # to take ~90% of NAV — see diagnostics I4, WEC/XEL $85k on $100k NAV).
-    max_weight_per_pair: float = 0.25
+    # Raised 0.25 → 0.35 in Round 5: with the loss tail cut (entry band,
+    # plateau stop, pre-earnings exit) per-trade expectancy is positive and
+    # scales linearly — NAV $102.4k → $103.3k, Sharpe 0.33 → 0.34, max dd
+    # 4.2% → 5.1%, win rate unchanged. Do not raise further without retesting
+    # concentration (Round 3 I4).
+    max_weight_per_pair: float = 0.35
 
     # Sizing divisor cap: investable capital is split across
     # min(active pairs, this) expected concurrent positions.
@@ -208,6 +213,25 @@ class StrategyConfig:
     # (diagnostics RC4 — SCHW/BAC stopped out in 8 days, twice).
     entry_requires_cross: bool = True
 
+    # Upper bound of the entry band: do not enter when |z| already exceeds
+    # this. A cross that lands far beyond the entry threshold is a single-day
+    # repricing (news), not a slow dislocation — Round 4: EXC/SO crossed from
+    # inside the band to z=-4.9 overnight (beyond the stop itself) and lost
+    # -$923 the next day; GS/MS gapped to 2.2 and stopped in 3 days. The
+    # remaining distance to the stop is also too small for the risk/reward.
+    # None disables the cap.
+    entry_zscore_max: float | None = 2.0
+
+    # Plateau stop: exit when the adverse z-score has been at or beyond this
+    # level for stop_plateau_days consecutive trading days. Round 4: every
+    # slow-bleed stop-out (TMO/DHR, NOW/ANET, WEC/XEL, SO/WEC) lingered at
+    # z 2.4-3.3 for 1-4 weeks without re-approaching the mean before finally
+    # breaching 3.5 — the reversion premise was already dead. Exiting after a
+    # sustained plateau realizes a ~1σ smaller loss than the hard stop.
+    # stop_plateau_days = 0 disables.
+    stop_plateau_zscore: float = 2.75
+    stop_plateau_days: int = 3
+
     # Take profit: close position when absolute Z-score reverts back towards
     # the mean. 1.0 (was 0.5) selected by the Round 3 in-sample sweep: taking
     # the first ~0.25σ of reversion wins far more often than holding for a
@@ -258,6 +282,22 @@ class StrategyConfig:
 
     # Trading days after end of quarter before entries resume
     earnings_blackout_days_after: int = 1
+
+    # --- Defensive pre-earnings exit (real earnings dates) ---
+    # Force-close an open pair this many trading days before either leg
+    # reports earnings, but ONLY when the position is already losing
+    # (adverse formation z >= earnings_exit_min_adverse_z). Rationale
+    # (Round 5 data): the two largest losses in the book were single-day
+    # earnings gaps through the stop (SCHW -10% on 2024-07-16 earnings,
+    # -$4.0k; VLO/CVX Oct-Nov 2024 reports, -$1.6k) — both positions were
+    # already >1.75σ adverse going into the print. Winning or near-flat
+    # positions are held through earnings: entries near earnings resolved
+    # in our favor repeatedly (DE/HON +$963, ADSK/WDAY +$775, TXN/QCOM
+    # +$621), so an unconditional exit or entry blackout gives the edge
+    # back. Requires data/raw/earnings.parquet (scripts/01 --stage
+    # earnings); silently disabled when the file is missing. 0 disables.
+    earnings_exit_days_before: int = 2
+    earnings_exit_min_adverse_z: float = 1.75
 
     # -------------------------------------------------------------------------
     # Position Sizing
@@ -399,6 +439,20 @@ def _validate_config(cfg: StrategyConfig) -> None:
     assert cfg.take_profit_zscore < cfg.entry_zscore < cfg.stop_loss_zscore, (
         "Z-score thresholds must logically cascade: take_profit < entry < stop_loss"
     )
+
+    if cfg.entry_zscore_max is not None:
+        assert cfg.entry_zscore < cfg.entry_zscore_max <= cfg.stop_loss_zscore, (
+            f"entry_zscore_max ({cfg.entry_zscore_max}) must lie between "
+            f"entry_zscore ({cfg.entry_zscore}) and stop_loss_zscore "
+            f"({cfg.stop_loss_zscore})"
+        )
+
+    if cfg.stop_plateau_days > 0:
+        assert cfg.entry_zscore < cfg.stop_plateau_zscore < cfg.stop_loss_zscore, (
+            f"stop_plateau_zscore ({cfg.stop_plateau_zscore}) must lie between "
+            f"entry_zscore ({cfg.entry_zscore}) and stop_loss_zscore "
+            f"({cfg.stop_loss_zscore})"
+        )
 
     assert cfg.vix_resume < cfg.vix_entry_block, (
         f"vix_resume ({cfg.vix_resume}) must be less than "

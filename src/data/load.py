@@ -76,6 +76,38 @@ def load_prices(start: date, end: date) -> pd.DataFrame:
     return df.sort_values(["ticker", "date"]).reset_index(drop=True)
 
 
+def load_earnings_dates() -> pd.DataFrame:
+    """
+    Load per-ticker earnings dates fetched by scripts/01 (earnings stage).
+
+    Earnings dates are announced publicly in advance, so consuming them in
+    the backtest on or before the report date is look-ahead safe.
+
+    Returns:
+        DataFrame with columns [ticker, earnings_date] (tz-naive normalized
+        Timestamps), sorted by ticker then date. Empty DataFrame with those
+        columns when data/raw/earnings.parquet does not exist — callers must
+        treat that as "earnings features disabled".
+    """
+    path = RAW_DIR / "earnings.parquet"
+    if not path.exists():
+        logger.warning(
+            "earnings.parquet not found in %s — earnings-aware features "
+            "disabled. Run scripts/01_fetch_data.py --stage earnings.",
+            RAW_DIR,
+        )
+        return pd.DataFrame(columns=["ticker", "earnings_date"])
+
+    df = pd.read_parquet(path)
+    df["earnings_date"] = pd.to_datetime(df["earnings_date"]).dt.normalize()
+    return (
+        df[["ticker", "earnings_date"]]
+        .drop_duplicates()
+        .sort_values(["ticker", "earnings_date"])
+        .reset_index(drop=True)
+    )
+
+
 def load_vix(start: date, end: date) -> pd.Series:
     """
     Load daily VIX closing values for a date range.
