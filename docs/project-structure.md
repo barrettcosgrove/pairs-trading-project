@@ -72,7 +72,7 @@ Notable live defaults (not the original percentile spec):
 | Gates | half-life 5–20 days; `min_cointegration_score` 0.40; `min_composite_score` 0.55; formation β > 0 |
 | Signals | formation z: enter 1.5, take-profit 0.5, stop 3.5; time stop 50 days; momentum 14d / 15% |
 | Regime | VIX block 28 / resume 25 for 5 days; quarter-end earnings blackout |
-| Backtest | $100k, 2022-01-01 → 2024-12-31, `oos_fraction` 0.30 |
+| Backtest | $100k, 2022-01-01 → 2024-12-31 |
 
 ---
 
@@ -149,7 +149,8 @@ Only within-cluster pairs go to scoring.
 
 ## `src/metrics/`
 
-Stubs. Do not expect charts from script 05 yet.
+`performance.compute` and `reporting.generate_report` (script 04). Core charts:
+NAV/drawdown, monthly heatmap, exit mix, blocked entries, plus `metrics_summary.txt`.
 
 ---
 
@@ -170,9 +171,8 @@ Stubs. Do not expect charts from script 05 yet.
 |---|---|
 | `01_fetch_data.py` | CLI around `fetch_all`. Stages: prices → regime → fundamentals. |
 | `02_build_universe.py` | Clean + monthly universe history. |
-| `03_run_backtest.py` | `run_backtest(CONFIG)` over the full configured calendar. Writes `trade_log.csv`, `nav_series.csv`, `pair_daily_mtm.csv`. |
-| `04_walkforward.py` | Slices the last `oos_fraction` of those CSVs. Does **not** re-run rolling quarterly re-fits. |
-| `05_generate_report.py` | Stub. |
+| `03_run_backtest.py` | `run_backtest(CONFIG)` over the full configured calendar. Writes `trade_log.csv`, `nav_series.csv`, `pair_daily_mtm.csv`, `blocked_entries.csv`. |
+| `04_generate_report.py` | Charts + metrics summary from those CSVs. Does not re-run the engine. |
 
 ---
 
@@ -180,7 +180,7 @@ Stubs. Do not expect charts from script 05 yet.
 
 Synthetic only. No yfinance, no `data/` parquet.
 
-`test_backtest.py`, `test_clustering.py`, `test_cointegration.py`, `test_composite.py`, `test_correlation_stability.py`, `test_halflife.py`, `test_scoring.py`, `test_scoring_integration.py`, `test_signals.py`, `test_volatility.py`.
+`test_backtest.py`, `test_clustering.py`, `test_cointegration.py`, `test_composite.py`, `test_correlation_stability.py`, `test_halflife.py`, `test_metrics.py`, `test_scoring.py`, `test_scoring_integration.py`, `test_signals.py`, `test_volatility.py`.
 
 ---
 
@@ -191,6 +191,6 @@ Synthetic only. No yfinance, no `data/` parquet.
 | `backtest_results/trade_log.csv` | Script 03 |
 | `backtest_results/nav_series.csv` | Script 03 |
 | `backtest_results/pair_daily_mtm.csv` | Script 03 |
-| `backtest_results/oos_*.csv` | Script 04 |
+| `backtest_results/blocked_entries.csv` | Script 03 |
 | `data_quality_report.txt` | Script 02 / `clean.py` |
-| `report/` | Intended for script 05 (empty) |
+| `report/` | Script 04 |

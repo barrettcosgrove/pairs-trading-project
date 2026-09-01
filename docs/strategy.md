@@ -416,13 +416,15 @@ scripts/04_walkforward.py     — Walk-forward validation
 scripts/05_generate_report.py — All performance charts and tables
 ```
 
-**Run commands:**
+> **Not live.** The implemented pipeline is 01 → 02 → 03 → `04_generate_report.py`.
+> Walk-forward was cut; see `docs/architecture.md` and `docs/decisions.md`.
+
+**Run commands (live):**
 ```bash
 uv run python scripts/01_fetch_data.py --disable-proxy
 uv run python scripts/02_build_universe.py
 uv run python scripts/03_run_backtest.py
-uv run python scripts/04_walkforward.py
-uv run python scripts/05_generate_report.py
+uv run python scripts/04_generate_report.py
 ```
 
 **Out-of-sample split.** The final **20%** of the dataset (`oos_fraction = 0.20`, approximately 6 months of a 2.5-year dataset) is held out and never used for parameter selection or training. Walk-forward validation runs over the training period only; OOS performance is reported separately.

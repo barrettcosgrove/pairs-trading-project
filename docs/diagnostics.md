@@ -1,12 +1,12 @@
 # Strategy Diagnostics
 
 Living log of backtest issues, attempted fixes, and measured performance.
-Update this file after each material change and re-run of scripts 03–04.
+Update this file after each material change and re-run of script 03.
 
 **Window:** 2022-01-03 → 2024-12-31 (`CONFIG.backtest_start_date` / `backtest_end_date`)
 **Capital:** $100,000
-**Outputs:** `outputs/backtest_results/{trade_log,nav_series,oos_*}.csv`
-**OOS slice:** last 30% of the calendar (`CONFIG.oos_fraction = 0.30`), starts 2024-02-08
+**Outputs:** `outputs/backtest_results/{trade_log,nav_series,pair_daily_mtm,blocked_entries}.csv`
+**Historical OOS cut (not a pipeline step):** last 30% of the calendar, starts 2024-02-08
 
 If code and this file disagree, trust the latest CSVs and then update this file.
 
@@ -67,9 +67,14 @@ to +$3.9k.
 
 | ID | Issue | Why it matters | Notes |
 |---|---|---|---|
-| I6 | Script 05 / reporting is a stub | No generated chart pack | `scripts/05_generate_report.py` and `src/metrics/reporting.py` are comments only |
 | I7 | Round 4/5 thresholds partially selected on full-period data | +3.28% is partly in-sample | Entry band 2.0 and plateau 2.75/3 were chosen from Run 3 trade forensics (mostly IS trades); `earnings_exit_min_adverse_z` 1.75 was picked from a 2-point test (1.5 vs 1.75) that includes the OOS trades. SCHW/MS exits at adverse 1.89 — a threshold above that gives the −$4k gap back. Treat 1.75 as fragile until more earnings events are observed |
 | I8 | Win rate 76% vs 82% without earnings exits | User-facing metric regression | Six EARNINGS_EXIT scratches (avg −$687) count as losses; setting `earnings_exit_days_before = 0` restores 82% profitable but returns the −$4k tail and OOS −$1.8k. Deliberate trade |
+
+### Resolved (reporting)
+
+| ID | Issue | Fix |
+|---|---|---|
+| I6 | Script 05 / reporting was a stub | `scripts/04_generate_report.py` writes NAV/drawdown, monthly heatmap, exit mix, blocked-entries charts, and `metrics_summary.txt`. Walk-forward CSV slice removed. |
 
 ### Resolved in Round 4/5 (do not regress)
 
@@ -287,8 +292,6 @@ the ones that survived are in config, the rest are documented as worse.
    on ~full NAV (2–5% in this window, ≈ +$12k). Deliberately NOT credited:
    headline NAV would clear $110k while trading alpha stayed ~zero.
    Decision was to keep trading-only P&L.
-3. **Reporting** — implement `scripts/05_generate_report.py` /
-   `src/metrics/reporting.py`, including the blocked_entries breakdown.
 
 ---
 
@@ -298,7 +301,7 @@ Fixes above do not change universe filters. Do **not** re-fetch (01) or rebuild 
 
 ```bash
 uv run python scripts/03_run_backtest.py
-uv run python scripts/04_walkforward.py
+uv run python scripts/04_generate_report.py
 ```
 
 Compare `outputs/backtest_results/nav_series.csv` and `trade_log.csv`, then add a row to the performance table and a short “Round N” section.

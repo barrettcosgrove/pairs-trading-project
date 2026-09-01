@@ -1,7 +1,7 @@
 # Central simulation loop iterating day by day over the full configured range.
 # Monthly: universe reconstitution. Quarterly: re-cluster and composite scoring.
 # Daily: regime filters, signals, execution, costs. Writes trade_log and nav_series.
-# Entry point for scripts/03_run_backtest.py; scripts/04 slices OOS from outputs.
+# Entry point for scripts/03_run_backtest.py; script 04 charts the CSVs.
 
 import logging
 import math
@@ -39,9 +39,7 @@ def run_backtest(
     Run the ARQ pairs trading simulation over the full backtest date range.
 
     Iterates every trading day from ``backtest_start_date`` through
-    ``backtest_end_date`` with a single continuous portfolio (no reset at the
-    OOS calendar boundary). ``oos_fraction`` is reserved for reporting in
-    ``scripts/04_walkforward.py`` only.
+    ``backtest_end_date`` with a single continuous portfolio.
 
     Args:
         config: StrategyConfig instance. Use CONFIG for the default run
@@ -123,11 +121,10 @@ def run_backtest(
         return _empty_backtest_outputs()
 
     logger.info(
-        "Backtest period: %s → %s (%d trading days; OOS slice uses oos_fraction=%.2f in script 04)",
+        "Backtest period: %s → %s (%d trading days)",
         run_dates[0].date(),
         run_dates[-1].date(),
         len(run_dates),
-        config.oos_fraction,
     )
 
     # ── State ─────────────────────────────────────────────────────────────────

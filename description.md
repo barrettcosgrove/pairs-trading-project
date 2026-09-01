@@ -22,7 +22,7 @@ We trade **pairs** of stocks that look statistically similar and mean-reverting.
 
 The backtest pulls **adjusted closes and volume** from `data/raw/prices.parquet` (via the shared data loader), **daily log returns** from `data/processed/returns.parquet`, and **VIX** from `data/raw/regime.parquet` for the volatility regime filter.
 
-The default historical simulation runs from **2019-01-01** through **2024-12-31** (these are configurable). For reporting, scripts can slice using **`oos_fraction` = 0.30** (last 30% of trading days); the main simulation still runs one continuous timeline unless **`run_oos_only`** is turned on elsewhere in your workflow.
+The default historical simulation runs from **2019-01-01** through **2024-12-31** (these are configurable). The main simulation runs one continuous timeline. Reporting charts come from `scripts/04_generate_report.py` after the backtest CSVs exist.
 
 ---
 

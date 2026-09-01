@@ -2,8 +2,7 @@
 scripts/03_run_backtest.py — Main Backtest Execution
 
 Executes the ARQ pairs trading backtest over the full configured date range.
-The engine runs one continuous simulation; script 04 slices OOS metrics using
-``CONFIG.oos_fraction``.
+The engine runs one continuous simulation. Script 04 charts these CSVs.
 
 Usage:
     uv run python scripts/03_run_backtest.py
@@ -12,6 +11,7 @@ Outputs:
     outputs/backtest_results/trade_log.csv
     outputs/backtest_results/nav_series.csv
     outputs/backtest_results/pair_daily_mtm.csv
+    outputs/backtest_results/blocked_entries.csv
 """
 
 import logging
@@ -38,8 +38,8 @@ def main() -> None:
     Execute the full-calendar backtest and write trade_log, nav_series, and
     per-pair EOD MTM snapshots (``pair_daily_mtm.csv``).
 
-    Uses parameters from ``src/config.py``. The final ``oos_fraction`` tail is
-    not truncated here; use ``scripts/04_walkforward.py`` for OOS CSV slices.
+    Uses parameters from ``src/config.py``. After this script finishes, run
+    ``scripts/04_generate_report.py`` for charts and a metrics summary.
     
     Args:
         None
@@ -51,11 +51,7 @@ def main() -> None:
     logger.info("  ARQ PAIRS TRADING — FULL BACKTEST")
     logger.info("=" * 60)
     
-    # Run the backtest over the full configured date range (single continuous NAV path).
-    logger.info(
-        "Running full-calendar backtest (oos_fraction=%.2f used only by script 04 for slicing)...",
-        CONFIG.oos_fraction,
-    )
+    logger.info("Running full-calendar backtest...")
     trade_log, nav_series, pair_daily, blocked_entries = run_backtest(CONFIG)
 
     # Prepare output directories

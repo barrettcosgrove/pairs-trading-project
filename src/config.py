@@ -394,11 +394,11 @@ class StrategyConfig:
     backtest_end_date: str | None = "2024-12-31"
 
 
-    # Fraction of the full dataset held out as out-of-sample
-    # Portion of dataset to hold out for walk-forward validation (e.g. 0.20 = 20%)
+    # Unused — leftover from the removed walk-forward slice script.
+    # Kept on the dataclass so existing StrategyConfig(...) call sites stay valid.
     oos_fraction: float = 0.30
-    
-    # If True, the engine will only loop over the OOS timeline (bypassing the IS timeline)
+
+    # Unused — never wired into run_backtest. Kept for the same reason as oos_fraction.
     run_oos_only: bool = False
 
     # Partial fill threshold — cancel long leg if short leg fills below this

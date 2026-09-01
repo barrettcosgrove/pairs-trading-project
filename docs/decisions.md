@@ -186,3 +186,21 @@ ADSK/WDAY +$775, TXN/QCOM +$621 were all opened within 5 trading days of
 a report): an unconditional exit or entry blackout gives back ~$4k of
 wins. Conditional exit what-if: net +$3.1k vs +$0.4k, OOS −$1.9k → +$2.8k.
 See docs/diagnostics.md Round 5.
+
+## Walk-forward script removed; report is script 04
+
+Date: September 2026
+
+Decision: Delete `scripts/04_walkforward.py` (it only sliced the last
+`oos_fraction` of script 03 CSVs). Renumber the report generator to
+`scripts/04_generate_report.py` and implement the core chart pack in
+`src/metrics/`.
+
+Rationale: The slice was not walk-forward validation, did not re-fit, and
+was not a clean holdout. Pair refresh already happens inside the engine.
+OOS numbers in `docs/diagnostics.md` remain as a historical reporting cut
+of the full-sample CSVs.
+
+`oos_fraction` and `run_oos_only` stay on `StrategyConfig` unused so
+existing constructors do not break.
+

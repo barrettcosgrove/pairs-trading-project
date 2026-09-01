@@ -34,7 +34,7 @@ formation z-score** (not empirical percentiles).
 | statsmodels | 0.14+ | Johansen, OLS regression |
 | yfinance | 0.2.40+ | Price and fundamental data |
 | pyarrow | 15+ | Parquet I/O |
-| matplotlib + seaborn | latest | Visualization (unused until script 05) |
+| matplotlib + seaborn | latest | Report charts (script 04) |
 | pytest | 8+ | Unit testing |
 | ruff | 0.4+ | Linting and import sorting |
 | uv | latest | Dependency and environment management |
@@ -64,11 +64,11 @@ arq-pairs-trading/
 │   ├── signals/          ← hedge_ratio.py, spread.py, entry_exit.py
 │   ├── regime/           ← vix.py, earnings.py
 │   ├── backtest/         ← engine.py, portfolio.py, costs.py, execution.py
-│   ├── metrics/          ← STUBS
+│   ├── metrics/          ← performance.py, reporting.py
 │   ├── tiering/          ← leftover; engine does not call it
 │   └── scrap/            ← prototypes; not the pipeline
 │
-├── scripts/              ← 01 → 02 → 03 → 04 (05 is a stub)
+├── scripts/              ← 01 → 02 → 03 → 04
 ├── tests/
 ├── outputs/              ← GITIGNORED
 ├── working_model/        ← old prototype
@@ -84,7 +84,7 @@ arq-pairs-trading/
 | Barrett | `src/data/`, `src/universe/`, `src/config.py`, `data/sector_map.py`, `scripts/01`, `scripts/02`, `tests/fixtures/` |
 | Althan | `src/clustering/`, `src/scoring/` |
 | Anvay | `src/signals/`, `src/regime/`, `src/backtest/` |
-| Nanshu | `src/metrics/`, `scripts/03`, `scripts/04`, `scripts/05` |
+| Nanshu | `src/metrics/`, `scripts/03`, `scripts/04` |
 
 When working on a module, check ownership before editing files outside your
 area. Cross-module changes require a PR reviewed by the other owner.
@@ -256,14 +256,14 @@ run_backtest(config: StrategyConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.Dat
 scripts/01_fetch_data.py      ← Run once at project start
 scripts/02_build_universe.py  ← Run after 01, or after config changes
 scripts/03_run_backtest.py    ← Full-calendar simulation
-scripts/04_walkforward.py     ← Slices last oos_fraction of 03 CSVs (no re-fit)
-scripts/05_generate_report.py ← Stub — do not expect charts
+scripts/04_generate_report.py ← Charts + metrics summary from script 03 CSVs
 ```
 
 ```bash
 uv run python scripts/01_fetch_data.py --disable-proxy
 uv run python scripts/02_build_universe.py
 uv run python scripts/03_run_backtest.py
+uv run python scripts/04_generate_report.py
 ```
 
 ---
@@ -299,7 +299,7 @@ uv run python scripts/03_run_backtest.py
 | `beta_rebalance_threshold` | 0.15 | Resize short leg; do **not** overwrite `beta_at_entry` |
 | `min_dollar_volume` | 25,000,000 | 30-day ADV$ proxy |
 | `backtest_start_date` / `backtest_end_date` | 2022-01-01 / 2024-12-31 | Simulation window only |
-| `oos_fraction` | 0.30 | Script 04 slice |
+| `oos_fraction` | 0.30 | Unused leftover (walk-forward script removed) |
 | `initial_capital` | 100000 | |
 | `random_seed` | 42 | K-means |
 | `data_quality_window` / `max_missing_days` | 90 / 5 | `clean.py` |
@@ -364,8 +364,8 @@ not P/S.
 **Tiering and Bollinger are not on the live path** — `src/tiering/` is
 leftover. There is no `bollinger.py`. Do not import either in new code.
 
-**Script 04 is a slice** — It does not re-cluster quarterly. Script 05 is
-a stub.
+**Script 04 is the report** — It charts script 03 CSVs. There is no
+walk-forward slice step.
 
 **Percentile thresholds are gone** — Signals are z-score. Do not
 reintroduce `entry_percentile_*` in new code unless config and tests

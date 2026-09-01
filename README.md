@@ -140,7 +140,7 @@ arq-pairs-trading/
 │   ├── signals/                 ← Hedge ratio, spread, z-score signals
 │   ├── regime/                  ← VIX, earnings blackout
 │   ├── backtest/                ← Engine, portfolio, costs, execution
-│   └── metrics/                 ← Stubs (script 05 not implemented)
+│   └── metrics/                 ← performance.py, reporting.py (script 04)
 │
 ├── scripts/                     ← 01 fetch → 02 universe → 03 backtest → 04 OOS slice
 ├── tests/                       ← pytest, synthetic data only
@@ -191,11 +191,9 @@ Run scripts in numbered order.
 # Full-calendar backtest (CONFIG.backtest_start_date → backtest_end_date)
 uv run python scripts/03_run_backtest.py
 
-# Slice the last CONFIG.oos_fraction of those CSVs (does not re-fit)
-uv run python scripts/04_walkforward.py
+# Charts and metrics summary from those CSVs
+uv run python scripts/04_generate_report.py
 ```
-
-`scripts/05_generate_report.py` is a stub. There is no generated report yet.
 
 Results:
 
@@ -204,7 +202,8 @@ Results:
 | `outputs/backtest_results/trade_log.csv` | Script 03 |
 | `outputs/backtest_results/nav_series.csv` | Script 03 |
 | `outputs/backtest_results/pair_daily_mtm.csv` | Script 03 |
-| `outputs/backtest_results/oos_*.csv` | Script 04 |
+| `outputs/backtest_results/blocked_entries.csv` | Script 03 |
+| `outputs/report/*.png`, `metrics_summary.txt` | Script 04 |
 
 Script 03 has no CLI parameter overrides. Change values in `src/config.py`
 (or construct a `StrategyConfig` in code) and re-run.
@@ -232,7 +231,7 @@ Never hardcode parameters in module files.
 | `min_formation_beta` | 0.0 | Drop non-positive formation β |
 | `backtest_start_date` | 2022-01-01 | First simulated trading day |
 | `backtest_end_date` | 2024-12-31 | Last simulated trading day |
-| `oos_fraction` | 0.30 | Trailing slice used by script 04 |
+| `oos_fraction` | 0.30 | Unused leftover (walk-forward script removed) |
 | `initial_capital` | 100000 | Starting NAV |
 | `random_seed` | 42 | K-means reproducibility |
 
@@ -258,7 +257,7 @@ Tests build synthetic frames in-process. They never call yfinance or read
 | Barrett | `src/data/`, `src/universe/`, `src/config.py`, `data/sector_map.py`, `scripts/01`, `scripts/02` |
 | Althan | `src/clustering/`, `src/scoring/` |
 | Anvay | `src/signals/`, `src/regime/`, `src/backtest/` |
-| Nanshu | `src/metrics/`, `scripts/03`, `scripts/04`, `scripts/05` |
+| Nanshu | `src/metrics/`, `scripts/03`, `scripts/04` |
 
 Cross-module changes need a PR reviewed by the other owner.
 
@@ -276,10 +275,8 @@ are not point-in-time. Live scoring uses sector labels only.
 **Earnings blackout** — Last 5 trading days of each calendar quarter, not
 per-name earnings dates.
 
-**Script 04 is a slice** — It does not re-cluster or re-score on rolling
-windows. OOS is the last 30% of the same continuous simulation.
-
-**Script 05 / metrics** — Not implemented.
+**Walk-forward was cut** — There is no rolling train/test script. Script 04
+charts the full-sample CSVs from script 03.
 
 Empirical results and open issues: [`docs/diagnostics.md`](docs/diagnostics.md).
 

@@ -51,18 +51,15 @@ arq-pairs-trading/
 │   │   ├── trade_log.csv
 │   │   ├── nav_series.csv
 │   │   ├── pair_daily_mtm.csv
-│   │   ├── oos_trade_log.csv
-│   │   ├── oos_nav_series.csv
-│   │   └── oos_pair_daily_mtm.csv
-│   ├── report/                    # unused until script 05 is implemented
+│   │   └── blocked_entries.csv
+│   ├── report/                    # script 04 charts + metrics_summary.txt
 │   └── data_quality_report.txt
 │
 ├── scripts/
 │   ├── 01_fetch_data.py
 │   ├── 02_build_universe.py
 │   ├── 03_run_backtest.py
-│   ├── 04_walkforward.py
-│   └── 05_generate_report.py      # stub
+│   └── 04_generate_report.py
 │
 ├── src/
 │   ├── config.py
@@ -79,8 +76,8 @@ arq-pairs-trading/
 │   │   ├── fetch.py
 │   │   └── load.py
 │   ├── metrics/
-│   │   ├── performance.py         # stub
-│   │   └── reporting.py           # stub
+│   │   ├── performance.py
+│   │   └── reporting.py
 │   ├── regime/
 │   │   ├── earnings.py
 │   │   └── vix.py
@@ -114,7 +111,8 @@ arq-pairs-trading/
 │   ├── test_scoring.py
 │   ├── test_scoring_integration.py
 │   ├── test_signals.py
-│   └── test_volatility.py
+│   ├── test_volatility.py
+│   └── test_metrics.py
 │
 ├── scratch/                       # ad-hoc analysis scripts
 └── working_model/                 # earlier prototype; not wired to scripts/
@@ -126,8 +124,6 @@ arq-pairs-trading/
 |---|---|
 | `src/tiering/` | Present on disk. Engine scores → trades directly. Do not import in new code. |
 | `src/regime/bollinger.py` | Removed. Do not reintroduce. |
-| `src/metrics/performance.py`, `reporting.py` | Header stubs only. |
-| `scripts/05_generate_report.py` | Header stub only. |
 | `src/scrap/`, `working_model/`, `scratch/` | Prototypes / one-off analysis. |
 
 File-by-file descriptions: [`docs/project-structure.md`](project-structure.md).

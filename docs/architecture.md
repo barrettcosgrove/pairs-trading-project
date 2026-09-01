@@ -86,11 +86,11 @@ them.
 │  costs.py      — commission, slippage, bid-ask, borrow      │
 │  execution.py  — simulated fills                            │
 └────────────────────────────┬────────────────────────────────┘
-                             │  trade_log, nav_series, pair_daily_mtm
+                             │  trade_log, nav_series, pair_daily_mtm, blocked_entries
                              ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  METRICS / REPORT    src/metrics/ + script 05               │
-│  Stubs. Script 04 slices last oos_fraction of the CSVs.     │
+│  METRICS / REPORT    src/metrics/ + script 04               │
+│  NAV/drawdown, monthly heatmap, exit mix, blocked entries   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -111,7 +111,7 @@ them.
 | yfinance | 0.2.40+ | Prices and fundamentals |
 | curl_cffi | latest | Chrome-impersonated session in `fetch.py` |
 | pyarrow | 15+ | Parquet I/O |
-| matplotlib + seaborn | latest | Intended for report charts (unused until script 05) |
+| matplotlib + seaborn | latest | Report charts (script 04) |
 | pytest | 8+ | Unit tests |
 | ruff | 0.4+ | Lint |
 | uv | latest | Environment |
@@ -128,7 +128,7 @@ See [`file-structure.md`](file-structure.md) for the full tree and
 
 ```
 src/          production modules (tiering/ and scrap/ are not live)
-scripts/      01 fetch → 02 universe → 03 backtest → 04 OOS slice
+scripts/      01 fetch → 02 universe → 03 backtest → 04 report
 tests/        synthetic pytest
 docs/         strategy (spec), architecture (live), diagnostics (results)
 data/         sector_map.py + gitignored raw/processed
@@ -175,11 +175,9 @@ data/processed/correlation_matrices/YYYY-MM.parquet
 outputs/backtest_results/trade_log.csv          # script 03
 outputs/backtest_results/nav_series.csv         # script 03
 outputs/backtest_results/pair_daily_mtm.csv     # script 03
-outputs/backtest_results/oos_trade_log.csv      # script 04 slice
-outputs/backtest_results/oos_nav_series.csv
-outputs/backtest_results/oos_pair_daily_mtm.csv
+outputs/backtest_results/blocked_entries.csv    # script 03
 outputs/data_quality_report.txt                 # clean.py / script 02
-outputs/report/                                 # unused until script 05
+outputs/report/                                 # script 04 charts + metrics_summary.txt
 ```
 
 There is no `pair_pnl.csv` or `walkforward_results.csv`.
@@ -193,7 +191,7 @@ There is no `pair_pnl.csv` or `walkforward_results.csv`.
 | Barrett | `src/data/`, `src/universe/`, `src/config.py`, `data/sector_map.py`, scripts 01–02 | `load_*` |
 | Althan | `src/clustering/`, `src/scoring/` | `run_clustering()`, `score_candidates()` |
 | Anvay | `src/signals/`, `src/regime/`, `src/backtest/` | `get_signal()`, `run_backtest()` |
-| Nanshu | `src/metrics/` (stub), scripts 03–05 | CSV writers; report not built |
+| Nanshu | `src/metrics/`, scripts 03–04 | CSV writers; report charts |
 
 Cross-module changes need a PR reviewed by the other owner.
 
@@ -313,11 +311,11 @@ uv run python scripts/01_fetch_data.py --disable-proxy
 
 uv run python scripts/02_build_universe.py
 uv run python scripts/03_run_backtest.py
-uv run python scripts/04_walkforward.py
+uv run python scripts/04_generate_report.py
 ```
 
-Script 04 does **not** walk forward quarterly. It writes `oos_*.csv` from
-the last `CONFIG.oos_fraction` of script 03's outputs. Script 05 is a stub.
+Script 04 reads script 03 CSVs and writes `outputs/report/`. It does not
+re-run the engine or slice an OOS window.
 
 To reset caches:
 

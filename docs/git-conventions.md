@@ -83,7 +83,7 @@ docs: update strategy.md with Bollinger regime filter clarification
 refactor(backtest): extract position sizing into portfolio.py
 
 engine.py was handling sizing logic directly. Moved to portfolio.py
-so it can be unit tested independently and reused by walkforward script.
+so it can be unit tested independently and reused by the report script.
 ```
 
 ---
