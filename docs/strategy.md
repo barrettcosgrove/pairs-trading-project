@@ -11,7 +11,7 @@
 > **Measured issues and NAV:** [`diagnostics.md`](diagnostics.md)
 >
 > Keep this file as design history. Do not “fix the code” to match this
-> spec unless the team explicitly re-adopts a section.
+> spec unless a section is explicitly re-adopted.
 
 <!-- Full refined strategy spec (v2.0): universe selection, clustering, composite scoring, tiering, regime filters, signal generation, exit rules, position sizing, and risk management. -->
 
@@ -36,7 +36,7 @@
 
 ## 1. Executive Summary
 
-ARQ is a systematic, market-neutral pairs trading strategy on S&P 500 stocks. The strategy identifies statistically cointegrated pairs, and generates mean-reversion signals using empirical spread percentiles.
+This spec describes a systematic, market-neutral pairs trading strategy on S&P 500 stocks. The design identifies statistically cointegrated pairs and generates mean-reversion signals using empirical spread percentiles.
 
 **Core thesis.** Highly correlated stocks share structural drivers — revenue mix, customer concentration, macro sensitivity — that prevent their prices from diverging permanently. When a transient dislocation pushes the spread to an extreme percentile, the expected path is reversion to the mean. We capture that reversion by trading dollar-neutral long/short spreads.
 
@@ -256,7 +256,7 @@ Three independent filters gate new position entries. All three must permit entry
 **Rules:**
 - No new entries from **5 trading days before** (`earnings_blackout_days_before = 5`) the end of a fiscal quarter through **1 trading day after** (`earnings_blackout_days_after = 1`). The blackout applies to either leg — if either stock in the pair is approaching its earnings window, the pair is blocked.
 
-**Scope note.** Earnings blackout is a scope-cut candidate if the team falls behind schedule. See `docs/decisions.md` for the current status.
+**Scope note.** Earnings blackout is a scope-cut candidate. See `docs/decisions.md` for the current status.
 
 ---
 
@@ -417,26 +417,10 @@ scripts/05_generate_report.py — All performance charts and tables
 ```
 
 > **Not live.** The implemented pipeline is 01 → 02 → 03 → `04_generate_report.py`.
-> Walk-forward was cut; see `docs/architecture.md` and `docs/decisions.md`.
-
-**Run commands (live):**
-```bash
-uv run python scripts/01_fetch_data.py --disable-proxy
-uv run python scripts/02_build_universe.py
-uv run python scripts/03_run_backtest.py
-uv run python scripts/04_generate_report.py
-```
+> Walk-forward was cut; see [`architecture.md`](architecture.md) and [`decisions.md`](decisions.md).
+> Install and CLI: [`README.md`](../README.md).
 
 **Out-of-sample split.** The final **20%** of the dataset (`oos_fraction = 0.20`, approximately 6 months of a 2.5-year dataset) is held out and never used for parameter selection or training. Walk-forward validation runs over the training period only; OOS performance is reported separately.
-
-### Module Ownership
-
-| Owner | Modules |
-|---|---|
-| Barrett | `src/data/`, `src/universe/`, `src/config.py`, `data/sector_map.py` |
-| Althan | `src/clustering/`, `src/scoring/` |
-| Anvay | `src/tiering/`, `src/signals/`, `src/regime/`, `src/backtest/` |
-| Nanshu | `src/metrics/`, `scripts/03–05` |
 
 ### Scope Cuts (if behind schedule)
 

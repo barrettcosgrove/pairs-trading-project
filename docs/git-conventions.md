@@ -1,6 +1,7 @@
 # Git Commit and PR Formatting Guide
 
-Standards for commits and pull requests on the ARQ Pairs Trading project. Following these conventions keeps the git history readable, makes code review faster, and helps Claude Code understand what changed and why.
+Standards for commits and pull requests. Following these conventions keeps
+the git history readable and makes code review faster.
 
 ---
 
@@ -137,7 +138,7 @@ Examples:
 ```
 feat(clustering): add silhouette-scored K-means with ARI stability check
 fix(regime): prevent stop tightening on positions younger than 1 day
-docs: add implementation plan with module ownership table
+docs: document clustering refresh cadence
 ```
 
 ---
@@ -213,7 +214,7 @@ Before marking a PR ready for review, confirm:
 
 **Data**
 - [ ] No parquet files or output files committed
-- [ ] If config parameters changed, teammates are notified to rebuild processed data
+- [ ] If config parameters changed, rebuild `data/processed/` before running the backtest
 
 ---
 

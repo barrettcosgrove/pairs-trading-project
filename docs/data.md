@@ -1,14 +1,8 @@
 # Data Reference
 
-# ARQ Pairs Trading — Data Reference
-
-This document is the reference for fetch sources, parquet schemas, and
-known data issues. Live scoring uses sector labels, not the fundamentals
+This document is the reference for fetch sources, parquet schemas, cleaning,
+and known data issues. Live scoring uses sector labels, not the fundamentals
 snapshot. Pipeline layout: [`architecture.md`](architecture.md).
-
-This document is the single source of truth for everything data-related:
-where data comes from, what each file contains, how it is cleaned, what
-the known quality issues are, and how to recover when something goes wrong.
 
 If you are debugging a data issue, start here.
 
@@ -547,8 +541,8 @@ uv run python scripts/01_fetch_data.py --disable-proxy
 If the error persists, switch to a personal hotspot rather than campus WiFi.
 Institutional networks commonly block financial data APIs at the firewall.
 
-Once you have a successful fetch, share `data/raw/` with teammates via
-Google Drive so they are not blocked by the same network issue.
+Once you have a successful fetch, keep `data/raw/` locally (it is gitignored)
+and re-run fetch on any other machine that needs the same cache.
 
 ---
 
@@ -748,7 +742,6 @@ development and backtesting period. If a refresh becomes necessary
    rm -rf data/processed/
    uv run python scripts/02_build_universe.py
   ```
-5. Share updated parquet files with teammates via Google Drive.
-6. Notify the team that processed data must be regenerated — teammates
-  should delete their local `data/processed/` and re-run step 4.
+5. If `data/raw/` changed, re-run fetch on any other checkout that uses this cache.
+6. Delete local `data/processed/` and re-run step 4 so derived files match.
 

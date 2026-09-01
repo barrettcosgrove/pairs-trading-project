@@ -1,10 +1,12 @@
-# ARQ Pairs Trading — System Architecture
+# System Architecture
 
 This document describes the **implemented** pipeline: modules, data flow,
 and contracts. Live parameters are in `src/config.py`. The original product
-spec is `docs/strategy.md` (several sections there — percentiles, tiering,
-Bollinger — are not what the engine does). Empirical issues:
-`docs/diagnostics.md`.
+spec is [`strategy.md`](strategy.md) (several sections there — percentiles,
+tiering, Bollinger — are not what the engine does). Empirical issues:
+[`diagnostics.md`](diagnostics.md). Install and CLI: [`README.md`](../README.md).
+Directory tree: [`file-structure.md`](file-structure.md). Parquet schemas:
+[`data.md`](data.md).
 
 If this file and the code disagree, trust the code and update this file.
 
@@ -32,7 +34,7 @@ them.
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  EXTERNAL SOURCES                                           │
-│  yfinance (prices, fundamentals)                            │
+│  yfinance (prices, fundamentals, earnings)                  │
 │  CBOE / yfinance (VIX); Alpha Vantage / yfinance (SPY)      │
 └────────────────────────────┬────────────────────────────────┘
                              ▼
@@ -52,18 +54,17 @@ them.
                              ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  CLUSTERING          src/clustering/                        │
-│  correlation.py — 120-day D = 1 − ρ                         │
-│  kmeans.py      — silhouette k ∈ [4, 6]                     │
-│  Cadence: CONFIG.clustering_refresh_days (63)               │
+│  correlation.py — D = 1 − ρ over clustering_window          │
+│  kmeans.py      — silhouette k ∈ [k_min, k_max]             │
+│  Cadence: CONFIG.clustering_refresh_days                    │
 └────────────────────────────┬────────────────────────────────┘
                              ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  SCORING             src/scoring/                           │
-│  corr 0.20 / coint 0.25 / half-life 0.30 / vol 0.15 /       │
-│  sector 0.10                                                │
-│  Hard gate: half-life in [5, 20]                            │
-│  Soft floor: min_cointegration_score 0.40; β_F > 0          │
-│  Top 1 pair / cluster if composite ≥ 0.55                   │
+│  corr / coint / half-life / vol / sector weights            │
+│  Hard gate: half-life in [halflife_min, halflife_max]       │
+│  Soft floor: min_cointegration_score; β_F > min_formation_beta │
+│  Up to finalists_per_cluster pairs if composite ≥ floor     │
 └────────────────────────────┬────────────────────────────────┘
                              │  ticker_a, ticker_b, cluster_id,
                              │  composite_score, beta/mean/std_formation,
@@ -72,10 +73,9 @@ them.
               ▼                             ▼
 ┌──────────────────────────┐   ┌────────────────────────────┐
 │  SIGNALS  src/signals/   │   │  REGIME  src/regime/       │
-│  Locked formation z      │   │  vix.py — block > 28       │
-│  Live 60d β = hedge only │   │  earnings.py — quarter-end │
-│  entry 1.5 / TP 0.5 /    │   │                            │
-│  SL 3.5 / time 50d       │   │                            │
+│  Locked formation z      │   │  vix.py — block / resume   │
+│  Live β = hedge resize   │   │  earnings.py — blackout    │
+│  only (if enabled)       │   │  and pre-earnings exit     │
 └────────────┬─────────────┘   └─────────────┬──────────────┘
              └──────────────┬────────────────┘
                             ▼
@@ -86,7 +86,8 @@ them.
 │  costs.py      — commission, slippage, bid-ask, borrow      │
 │  execution.py  — simulated fills                            │
 └────────────────────────────┬────────────────────────────────┘
-                             │  trade_log, nav_series, pair_daily_mtm, blocked_entries
+                             │  trade_log, nav_series,
+                             │  pair_daily_mtm, blocked_entries
                              ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  METRICS / REPORT    src/metrics/ + script 04               │
@@ -95,115 +96,29 @@ them.
 ```
 
 `src/tiering/` exists on disk and is **not** called. There is no
-`bollinger.py`.
+`bollinger.py`. Defaults are in `src/config.py`, not in this diagram.
 
 ---
 
-## 3. Technology Stack
+## 3. Data flow
 
-| Tool | Version | Purpose |
-|---|---|---|
-| Python | 3.11+ | Runtime |
-| pandas | 2.2+ | DataFrames, time series |
-| numpy | 1.26+ | Numerical computation |
-| scikit-learn | 1.4+ | K-means, silhouette |
-| statsmodels | 0.14+ | Johansen, OLS |
-| yfinance | 0.2.40+ | Prices and fundamentals |
-| curl_cffi | latest | Chrome-impersonated session in `fetch.py` |
-| pyarrow | 15+ | Parquet I/O |
-| matplotlib + seaborn | latest | Report charts (script 04) |
-| pytest | 8+ | Unit tests |
-| ruff | 0.4+ | Lint |
-| uv | latest | Environment |
+Script 01 writes `data/raw/` (prices, fundamentals, regime, earnings).
+Script 02 writes `data/processed/` (returns, universe history). Script 03
+writes `outputs/backtest_results/`. Script 04 writes `outputs/report/`.
 
-The backtest is a custom daily loop (not vectorbt / backtrader) so formation
-locks, VIX hysteresis, and dollar-neutral β resize stay explicit.
-
----
-
-## 4. Directory Structure
-
-See [`file-structure.md`](file-structure.md) for the full tree and
-[`project-structure.md`](project-structure.md) for file-by-file notes.
-
-```
-src/          production modules (tiering/ and scrap/ are not live)
-scripts/      01 fetch → 02 universe → 03 backtest → 04 report
-tests/        synthetic pytest
-docs/         strategy (spec), architecture (live), diagnostics (results)
-data/         sector_map.py + gitignored raw/processed
-outputs/      gitignored CSVs
-```
-
----
-
-## 5. Data Flow and Storage
-
-### Raw (written by script 01)
-
-```
-data/raw/prices.parquet
-    ticker, date, open, high, low, close, adj_close, volume
-    Fetch window: 2019-01-01 → 2026-04-01. ~95 CANDIDATE_TICKERS.
-
-data/raw/fundamentals.parquet
-    ticker, fetch_date, price_to_sales, revenue_growth_ttm
-    Fetched but not used by live scoring.
-
-data/raw/regime.parquet
-    date, vix, spy
-    VIX: CBOE then yfinance. SPY: Alpha Vantage if keyed, else yfinance,
-    else synthetic (must not ship a final backtest on synthetic SPY/VIX).
-```
-
-### Processed (script 02)
-
-```
-data/processed/returns.parquet
-    ticker, date, log_return
-
-data/processed/universe_history.parquet
-    date, ticker, passed_filters
-
-data/processed/correlation_matrices/YYYY-MM.parquet
-    Optional cache from correlation.py (NxN distance).
-```
-
-### Outputs
-
-```
-outputs/backtest_results/trade_log.csv          # script 03
-outputs/backtest_results/nav_series.csv         # script 03
-outputs/backtest_results/pair_daily_mtm.csv     # script 03
-outputs/backtest_results/blocked_entries.csv    # script 03
-outputs/data_quality_report.txt                 # clean.py / script 02
-outputs/report/                                 # script 04 charts + metrics_summary.txt
-```
+Column schemas, fetch fallbacks, and known data issues:
+[`data.md`](data.md). Output paths: [`file-structure.md`](file-structure.md).
 
 There is no `pair_pnl.csv` or `walkforward_results.csv`.
 
 ---
 
-## 6. Module Ownership
+## 4. Data contracts
 
-| Owner | Modules | Interfaces |
-|---|---|---|
-| Barrett | `src/data/`, `src/universe/`, `src/config.py`, `data/sector_map.py`, scripts 01–02 | `load_*` |
-| Althan | `src/clustering/`, `src/scoring/` | `run_clustering()`, `score_candidates()` |
-| Anvay | `src/signals/`, `src/regime/`, `src/backtest/` | `get_signal()`, `run_backtest()` |
-| Nanshu | `src/metrics/`, scripts 03–04 | CSV writers; report charts |
-
-Cross-module changes need a PR reviewed by the other owner.
-
----
-
-## 7. Data Contracts
-
-Do not change these without updating `CLAUDE.md` / `AGENTS.md` and notifying
-the owner.
+Do not change these without updating `CLAUDE.md` / `AGENTS.md`.
 
 ```python
-# ── Barrett → everyone ────────────────────────────────────────────────────
+# ── Data layer ────────────────────────────────────────────────────────────
 
 def load_returns(start: date | None, end: date | None) -> pd.DataFrame:
     """
@@ -223,7 +138,14 @@ def load_vix(start: date | None, end: date | None) -> pd.Series:
 def load_universe(as_of: date) -> list[str]:
     """Passing tickers on the latest reconstitution on or before as_of."""
 
-# ── Althan → Anvay ────────────────────────────────────────────────────────
+def load_earnings_dates() -> pd.DataFrame:
+    """
+    Columns : [ticker, earnings_date] (tz-naive normalized Timestamps).
+    Empty frame (with columns) when data/raw/earnings.parquet is missing —
+    callers treat that as earnings features disabled.
+    """
+
+# ── Clustering and scoring ────────────────────────────────────────────────
 
 def run_clustering(distance_matrix: pd.DataFrame) -> dict[int, list[str]]:
     """cluster_id → tickers."""
@@ -238,13 +160,13 @@ def score_candidates(
     Columns:
         ticker_a, ticker_b, cluster_id, composite_score,
         beta_formation, mean_formation, std_formation, halflife_value
-    Rows: at most finalists_per_cluster (1) per cluster after
+    Rows: at most finalists_per_cluster per cluster after
           half-life gate, min_cointegration_score, min_composite_score,
           and min_formation_beta.
     Empty frame keeps the same columns (engine must not clear active_pairs).
     """
 
-# ── Anvay → engine / Nanshu ───────────────────────────────────────────────
+# ── Signals and backtest ──────────────────────────────────────────────────
 
 def get_signal(
     ticker_a: str,
@@ -260,96 +182,48 @@ def get_signal(
     config: StrategyConfig | None = None,
 ) -> str:
     """
-    LONG_SPREAD | SHORT_SPREAD | TAKE_PROFIT | STOP_LOSS | TIME_STOP | HOLD
+    LONG_SPREAD | SHORT_SPREAD | TAKE_PROFIT | STOP_LOSS |
+    PLATEAU_STOP | TIME_STOP | HOLD
     z uses locked formation β/μ/σ, never the live hedge β.
+    Entries require |z| within [entry_zscore, entry_zscore_max].
     """
 
 def run_backtest(
     config: StrategyConfig,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Returns (trade_log, nav_series, pair_daily_mtm).
+    Returns (trade_log, nav_series, pair_daily_mtm, blocked_entries).
 
-    trade_log:
-        date, ticker_a, ticker_b, action, shares_a, shares_b,
-        price_a, price_b, cost, pnl,
-        dollar_allocation_at_entry, realized_net_usd, return_pct
-
-    nav_series:
-        date, nav, cash, gross_exposure, drawdown_from_peak
-        (NAV snapshot is pre-trade in the day loop.)
-
-    pair_daily_mtm:
-        date, ticker_a, ticker_b, direction, cluster_id, mtm_usd,
-        gross_exposure_pair, dollar_allocation_at_entry,
-        portfolio_nav_post_trade
+    blocked_entries: [date, ticker_a, ticker_b, signal, reason]
+    Exit actions include PLATEAU_STOP, EARNINGS_EXIT, and DOLLAR_STOP.
     """
 ```
 
 ---
 
-## 8. Engine cadence
+## 5. Engine cadence
 
 | Event | Cadence | Notes |
 |---|---|---|
-| Load prices / returns / VIX | Once | `start=None` so 2019+ warmup is available |
+| Load prices / returns / VIX | Once | `start=None` so warmup history is available |
 | Simulation dates | Daily | Only `[backtest_start_date, backtest_end_date]` |
-| Universe | `universe_refresh_days` (21) | `load_universe(as_of)` |
-| Cluster + score | `clustering_refresh_days` (63) | Same-day entries allowed |
+| Universe | `universe_refresh_days` | `load_universe(as_of)` |
+| Cluster + score | `clustering_refresh_days` | Same-day entries allowed |
 | Empty score | — | Keep previous `active_pairs` |
-| VIX / earnings | Daily | Block new entries only |
-| Signal + execute | Daily | Formation z; `beta_hedge` for resize |
-| Stop cooldown | 20 trading days | Per pair after `STOP_LOSS` |
+| VIX / earnings | Daily | Block new entries; optional pre-earnings exit |
+| Signal + execute | Daily | Formation z; `beta_hedge` for resize if enabled |
+| Stop cooldown | `pair_stop_cooldown_days` | Per pair after `STOP_LOSS` / `PLATEAU_STOP` |
+
+Pipeline order (01 → 04): [`README.md`](../README.md#pipeline).
 
 ---
 
-## 9. Pipeline execution order
-
-```bash
-uv run python scripts/01_fetch_data.py --disable-proxy
-# optional: --stage prices|regime|fundamentals --resume
-
-uv run python scripts/02_build_universe.py
-uv run python scripts/03_run_backtest.py
-uv run python scripts/04_generate_report.py
-```
-
-Script 04 reads script 03 CSVs and writes `outputs/report/`. It does not
-re-run the engine or slice an OOS window.
-
-To reset caches:
-
-```bash
-rm -rf data/raw/ data/processed/ outputs/
-uv run python scripts/01_fetch_data.py --disable-proxy
-uv run python scripts/02_build_universe.py
-uv run python scripts/03_run_backtest.py
-```
-
----
-
-## 10. Testing
-
-```bash
-uv run pytest
-uv run pytest tests/test_scoring.py
-uv run pytest --cov=src
-```
-
-Synthetic only. Covered areas include clustering, the five scorers,
-composite gates, signals, and backtest portfolio helpers. End-to-end
-correctness is checked by running script 03 and reading
-`outputs/backtest_results/` plus `docs/diagnostics.md`.
-
----
-
-## 11. Known architectural limitations
+## 6. Known architectural limitations
 
 - Survivorship bias in yfinance listings.
 - Fundamentals parquet is a current snapshot and is unused by scoring.
 - Single-threaded daily loop.
 - No broker; MOC fills; flat 2% borrow.
-- Script 04 is a calendar slice, not a rolling re-fit.
-- Metrics / report layer is unimplemented.
+- Script 04 charts the full-sample CSVs; it is not a rolling re-fit.
 - `src/tiering/`, `src/scrap/`, `working_model/`, and `scratch/` are not
   on the live path.
