@@ -1,5 +1,7 @@
 # Pairs Trading
 
+> Mirrored from a team repository. Original commit history is not preserved.
+
 A systematic, market-neutral pairs trading strategy on a multi-sector S&P-style
 universe. The pipeline clusters stocks by recent return similarity, scores
 within-cluster pairs, and trades mean-reversion of the log-price spread using a
